@@ -32,6 +32,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
 
       - name: Run tests
+        if: matrix.target == 'linux'
         run: go test ./... -short
 
       # ---------- Linux: AppImage (native amd64 runner) ----------

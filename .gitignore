@@ -1,0 +1,12 @@
+# Build artifacts
+/sd2snes-covers
+/sd2snes-covers.exe
+*.app/
+*.dmg
+*.tar.xz
+/dist/
+/build/
+/fyne-cross/
+
+# OS junk
+.DS_Store

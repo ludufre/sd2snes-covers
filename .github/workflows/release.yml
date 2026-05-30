@@ -1,0 +1,106 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux }
+          - { os: windows-latest, target: windows }
+          - { os: macos-latest, target: darwin }
+    runs-on: ${{ matrix.os }}
+    env:
+      # true only when the Apple Developer secrets are present in this repo;
+      # without them the macOS build is still produced, just unsigned.
+      MAC_SIGN: ${{ secrets.APPLE_ID != '' && secrets.CSC_LINK != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Install Linux build deps
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+
+      - name: Run tests
+        run: go test ./... -short
+
+      # ---------- Linux: AppImage (native amd64 runner) ----------
+      - name: Build AppImage
+        if: matrix.target == 'linux'
+        run: bash packaging/linux/build-appimage.sh
+
+      # ---------- Windows / macOS: fyne package ----------
+      - name: Install fyne packaging tool
+        if: matrix.target != 'linux'
+        run: go install fyne.io/tools/cmd/fyne@latest
+
+      - name: Package Windows
+        if: matrix.target == 'windows'
+        run: fyne package -os windows -icon packaging/icons/icon-square.png
+
+      - name: Package macOS (universal arm64 + amd64)
+        if: matrix.target == 'darwin'
+        run: bash packaging/macos/build-app.sh
+
+      # ---------- macOS: sign + notarize (only when secrets are set) ----------
+      - name: Import signing certificate
+        if: matrix.target == 'darwin' && env.MAC_SIGN == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: bash packaging/macos/import-cert.sh
+
+      - name: Sign + notarize + staple
+        if: matrix.target == 'darwin' && env.MAC_SIGN == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash packaging/macos/notarize.sh "sd2snes Covers.app"
+
+      # ---------- collect artifacts into dist/ ----------
+      - name: Collect Windows artifact
+        if: matrix.target == 'windows'
+        shell: bash
+        run: mkdir -p dist && mv *.exe "dist/sd2snes-covers-windows-amd64.exe"
+
+      - name: Collect macOS artifact
+        if: matrix.target == 'darwin'
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "sd2snes Covers.app" "dist/sd2snes-covers-macos-universal.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd2snes-covers-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

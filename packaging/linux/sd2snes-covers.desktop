@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=sd2snes Covers
+Comment=Downloads box art for Super Nintendo ROMs
+Exec=sd2snes-covers
+Icon=sd2snes-covers
+Categories=Utility;Game;
+Terminal=false

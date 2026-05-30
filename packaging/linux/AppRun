@@ -1,0 +1,5 @@
+#!/bin/sh
+# AppImage entrypoint: run the bundled binary from the extracted AppDir.
+HERE="$(dirname "$(readlink -f "$0")")"
+export PATH="$HERE/usr/bin:$PATH"
+exec "$HERE/usr/bin/sd2snes-covers" "$@"

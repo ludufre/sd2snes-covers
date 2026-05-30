@@ -72,9 +72,8 @@ build_win() {
 		warn "skipping Windows (mingw-w64 missing — run ./prepare.sh)"
 		return
 	}
-	have_fyne || return
-	info "Windows .exe (amd64, mingw cross)"
-	env CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc fyne package -os windows -icon packaging/icons/icon-square.png
+	info "Windows .exe (amd64, mingw cross, with version metadata)"
+	bash packaging/windows/build-exe.sh
 	mv -f "$APPNAME.exe" "$DIST/sd2snes-covers-windows-amd64.exe"
 	ok "$DIST/sd2snes-covers-windows-amd64.exe"
 }

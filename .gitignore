@@ -7,6 +7,7 @@
 /dist/
 /build/
 /fyne-cross/
+*.syso
 
 # OS junk
 .DS_Store

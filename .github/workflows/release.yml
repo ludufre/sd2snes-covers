@@ -45,12 +45,13 @@ jobs:
 
       # ---------- Windows / macOS: fyne package ----------
       - name: Install fyne packaging tool
-        if: matrix.target != 'linux'
+        if: matrix.target == 'darwin'
         run: go install fyne.io/tools/cmd/fyne@latest
 
       - name: Package Windows
         if: matrix.target == 'windows'
-        run: fyne package -os windows -icon packaging/icons/icon-square.png
+        shell: bash
+        run: bash packaging/windows/build-exe.sh
 
       - name: Package macOS (universal arm64 + amd64)
         if: matrix.target == 'darwin'

@@ -29,7 +29,14 @@ command -v "$WINDRES" >/dev/null 2>&1 || {
 # in the main package automatically when building for windows/amd64.
 "$WINDRES" -O coff -i packaging/windows/resource.rc -o resource_windows_amd64.syso
 
-"${BUILD[@]}" go build -ldflags "-s -w -H windowsgui" -o "sd2snes Covers.exe" .
+LDFLAGS="-s -w -H windowsgui"
+OUT="sd2snes Covers.exe"
+if [ "${DEBUG_CONSOLE:-0}" = 1 ]; then
+	LDFLAGS=""
+	OUT="sd2snes Covers (debug).exe"
+fi
+
+"${BUILD[@]}" go build -ldflags "$LDFLAGS" -o "$OUT" .
 
 rm -f resource_windows_amd64.syso
-echo "built: sd2snes Covers.exe"
+echo "built: $OUT"

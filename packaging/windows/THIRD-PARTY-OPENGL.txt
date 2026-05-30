@@ -1,0 +1,18 @@
+Third-party component: Mesa3D software OpenGL (opengl32.dll)
+===========================================================
+
+The file packaging/windows/mesa-opengl32-softgl.7z contains a prebuilt,
+self-contained software OpenGL renderer for Windows x64 (Mesa3D / llvmpipe):
+
+    opengl32.dll   - Mesa3D "MesaForWindows" build
+                     Source: https://fdossena.com/?p=mesa/index.frag
+
+It is redistributed unmodified and shipped only inside the optional
+"software OpenGL" Windows variant (sd2snes-covers-windows-amd64-softgl.zip),
+for machines that have no working hardware OpenGL driver.
+
+Mesa3D is licensed under the MIT license. See https://www.mesa3d.org/ and
+https://docs.mesa3d.org/license.html for details.
+
+This archive is vendored (committed) so release builds are self-contained and
+do not depend on an external download at build time.

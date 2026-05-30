@@ -45,7 +45,8 @@ Per-ROM status: **OK** · **404** (in the DAT, but no cover on the server) · **
 
 Download the artifact for your OS from the [Releases](../../releases) page:
 
-- **Windows** — `sd2snes-covers-windows-amd64.exe`
+- **Windows** — `sd2snes-covers-windows-amd64.exe` (if it doesn't open, see [the note below](#windows--app-doesnt-open-no-window))
+- **Windows (software OpenGL)** — `sd2snes-covers-windows-amd64-softgl.zip`, for machines with no GPU OpenGL driver (see [the note below](#windows--app-doesnt-open-no-window))
 - **macOS** — `sd2snes-covers-macos-universal.zip` (Apple Silicon + Intel; see the Gatekeeper note below)
 - **Linux** — `sd2snes-covers-x86_64.AppImage` (`chmod +x` and run)
 
@@ -66,6 +67,14 @@ NOTARIZE=1 ./build.sh mac        # fyne package → codesign → notarytool → 
 ```
 
 Requires a *Developer ID Application* certificate in your keychain; the steps live in `packaging/macos/notarize.sh`.
+
+### Windows — app doesn't open (no window)
+
+If the `.exe` shows up in Task Manager but **no window ever appears** — or the window **flashes and closes immediately** — your machine can't use a hardware OpenGL driver (Fyne needs OpenGL 2.1+). This happens when the display adapter is **"Microsoft Basic Render Driver"** (no GPU driver installed), and on **Remote Desktop**, **virtual machines** without 3D acceleration, and **old/driverless GPUs**.
+
+Fix: download **`sd2snes-covers-windows-amd64-softgl.zip`** from [Releases](../../releases), extract both files (`sd2snes Covers.exe` + `opengl32.dll`) into the same folder, and just run the `.exe`. That bundled `opengl32.dll` is a software OpenGL renderer ([Mesa3D / llvmpipe](https://fdossena.com/?p=mesa/index.frag)) that Windows loads automatically because it sits next to the program — no launcher, no settings. Keep the two files together. If your machine actually has a GPU, the cleaner fix is to install its driver and use the normal `.exe` instead.
+
+> To capture the exact error, a maintainer can build a console variant with `DEBUG_CONSOLE=1 bash packaging/windows/build-exe.sh` and run it from `cmd.exe`.
 
 ## 🛠️ Build from source
 

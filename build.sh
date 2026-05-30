@@ -74,8 +74,12 @@ build_win() {
 	}
 	info "Windows .exe (amd64, mingw cross, with version metadata)"
 	bash packaging/windows/build-exe.sh
+	# software-OpenGL variant: same .exe + a bundled Mesa opengl32.dll, for
+	# machines with no working GPU OpenGL driver. Built before the .exe is moved.
+	bash packaging/windows/build-softgl-zip.sh "$APPNAME.exe" "$DIST/sd2snes-covers-windows-amd64-softgl.zip"
 	mv -f "$APPNAME.exe" "$DIST/sd2snes-covers-windows-amd64.exe"
 	ok "$DIST/sd2snes-covers-windows-amd64.exe"
+	ok "$DIST/sd2snes-covers-windows-amd64-softgl.zip"
 }
 
 build_linux() {

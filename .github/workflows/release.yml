@@ -74,10 +74,17 @@ jobs:
         run: bash packaging/macos/notarize.sh "sd2snes Covers.app"
 
       # ---------- collect artifacts into dist/ ----------
+      - name: Build software OpenGL variant
+        if: matrix.target == 'windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          bash packaging/windows/build-softgl-zip.sh "sd2snes Covers.exe" "dist/sd2snes-covers-windows-amd64-softgl.zip"
+
       - name: Collect Windows artifact
         if: matrix.target == 'windows'
         shell: bash
-        run: mkdir -p dist && mv *.exe "dist/sd2snes-covers-windows-amd64.exe"
+        run: mkdir -p dist && mv "sd2snes Covers.exe" "dist/sd2snes-covers-windows-amd64.exe"
 
       - name: Collect macOS artifact
         if: matrix.target == 'darwin'

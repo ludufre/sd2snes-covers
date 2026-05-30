@@ -26,6 +26,7 @@ func TestRunE2E(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+	t.Setenv("SD2SNES_COVERS_CACHE", t.TempDir()) // isolate the boxart cache
 
 	// A ROM that will resolve to a real boxart, named arbitrarily to prove the
 	// cover is saved using the ROM's own basename (not the No-Intro name).
@@ -84,13 +85,15 @@ func TestRunE2E(t *testing.T) {
 }
 
 // TestRunE2ERenameAndCov exercises rename-to-No-Intro + .cov generation against
-// the live server: an arbitrarily-named ROM is renamed, its boxart downloaded,
-// and a .cov produced — all under the No-Intro basename.
+// the live server: an arbitrarily-named ROM is renamed and a .cov produced under
+// the No-Intro basename, while the downloaded PNG stays in a temp dir (not kept
+// next to the ROM).
 func TestRunE2ERenameAndCov(t *testing.T) {
 	if testing.Short() {
 		t.Skip("network test; skipped in -short mode")
 	}
 	dir := t.TempDir()
+	t.Setenv("SD2SNES_COVERS_CACHE", t.TempDir()) // isolate the boxart cache
 	rom := filepath.Join(dir, "anything.sfc")
 	if err := os.WriteFile(rom, []byte("arbitrary rom bytes for e2e"), 0o644); err != nil {
 		t.Fatal(err)
@@ -120,23 +123,31 @@ func TestRunE2ERenameAndCov(t *testing.T) {
 	if row.Cov != CovOK {
 		t.Errorf("Cov = %v, want CovOK", row.Cov)
 	}
-	for _, ext := range []string{".sfc", ".png", ".cov"} {
+	for _, ext := range []string{".sfc", ".cov"} {
 		if _, err := os.Stat(filepath.Join(dir, base+ext)); err != nil {
 			t.Errorf("missing %s next to renamed ROM: %v", ext, err)
 		}
+	}
+	// The boxart PNG is an intermediate kept in a temp dir, so it must NOT be
+	// left next to the ROM when a .cov is generated.
+	if _, err := os.Stat(filepath.Join(dir, base+".png")); !os.IsNotExist(err) {
+		t.Errorf("intermediate .png should not be saved next to the ROM when MakeCov is on")
 	}
 	covBytes, err := os.ReadFile(filepath.Join(dir, base+".cov"))
 	if err != nil {
 		t.Fatalf(".cov missing: %v", err)
 	}
-	if len(covBytes) < 3 || covBytes[0] != 'C' || covBytes[1] != 'V' || covBytes[2] != 3 {
-		t.Errorf(".cov header invalid")
+	if len(covBytes) < 9 || covBytes[0] != 'C' || covBytes[1] != 'V' || covBytes[2] != 4 || covBytes[8] != 4 {
+		t.Errorf(".cov v4 header invalid")
 	}
 	d, err := cov.Decode(covBytes)
 	if err != nil {
 		t.Fatalf("cov.Decode: %v", err)
 	}
-	if d.Rows != 7 || d.Cols != 10 || d.Colors != 128 { // SMW boxart (512x357) -> 10x7
-		t.Errorf("cov = %dx%d %dcolors, want 10x7 128", d.Cols, d.Rows, d.Colors)
+	if d.WSpr != 8 || d.HSpr != 6 { // DefaultOptions: fixed 8x6 landscape frame
+		t.Errorf("cov = %dx%d sprites, want 8x6", d.WSpr, d.HSpr)
+	}
+	if d.NPalettes < 1 || d.NPalettes > 8 {
+		t.Errorf("npalettes = %d, want 1..8", d.NPalettes)
 	}
 }

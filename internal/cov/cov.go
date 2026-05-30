@@ -1,9 +1,13 @@
-// Package cov converts cover images into the sd2snes ".cov" 8bpp BG cover
-// format. The on-disk format (header / BGR555 palette / 8bpp planar tiles /
-// CGRAM mapping) is reproduced exactly from cover_conv.py so the firmware reads
-// it; the image pipeline (resize + median-cut quantization) is an independent
-// Go implementation, so output is format-compatible and visually equivalent but
-// not byte-identical to the Python tool.
+// Package cov converts cover images into the sd2snes ".cov v4" OBJ (sprite)
+// cover format. The cover is drawn by the firmware with 16x16 OBJ sprites floating
+// over the file list (so the list keeps its full Mode-5 hi-res rows): a w_spr x
+// h_spr grid of 16x16 sprites, 4bpp, up to 8 OBJ palettes (one per 16x16 block,
+// the BLOCKMAP). The on-disk format (header / BGR555 palettes / blockmap / 4bpp
+// name-grid tiles) is reproduced exactly from utils/cover_conv.py (convert_image_v4)
+// so the firmware reads it; the image pipeline (resize + per-block median-cut +
+// 8-palette clustering + cross-block Floyd-Steinberg) is an independent Go
+// implementation, so output is format-compatible and visually equivalent but not
+// byte-identical to the Python tool.
 package cov
 
 import (
@@ -24,72 +28,72 @@ import (
 const (
 	magic0     = 'C'
 	magic1     = 'V'
-	version    = 3
-	bpp        = 8
+	version    = 4
+	bpp        = 4
 	headerSize = 12
 )
 
-// Options controls a .cov conversion. DefaultOptions mirrors the sd2snes fork.
+// Options controls a .cov v4 conversion. DefaultOptions mirrors the sd2snes fork
+// (utils/gencovers.py make_cov).
 type Options struct {
-	Cols      int  // cover width in 8px tiles (1..32); ignored when AutoWidth
-	Rows      int  // cover height in 8px tiles (1..7)
-	CGBase    int  // CGRAM index the palette loads at (16..255)
-	Colors    int  // palette colours (1..256-CGBase)
-	Dither    bool // Floyd-Steinberg dithering
-	Fill      bool // crop-to-fill instead of letterbox-fit
-	KeepAlpha bool // keep source transparency (index 0); for a logo, not covers
-	AutoWidth bool // derive Cols from the source aspect ratio (fills the Rows band)
-	MaxCols   int  // cap for AutoWidth (defaults to 32, the full menu width)
+	WSpr      int  // cover width  in 16x16 sprites (1..8); ignored when AutoSize
+	HSpr      int  // cover height in 16x16 sprites (1..8; (2*HSpr)*16 <= 256 OBJ tiles)
+	NPalettes int  // OBJ palettes (1..8)
+	Dither    bool // cross-block Floyd-Steinberg dithering
+	Fill      bool // crop-to-fill instead of letterbox-fit (letterbox keeps proportion)
+	AutoSize  bool // derive WSpr/HSpr from the source aspect (within 8x8), so portrait
+	// (Japanese) art becomes a tall narrow cover and landscape art a wide one — the
+	// firmware right-/top-aligns by w_spr/h_spr, no baked-in empty space.
 }
 
-// DefaultOptions returns the sd2snes fork defaults: the cover fills the 7-row
-// (56px) header band and its width follows the source aspect ratio (up to the
-// full 32-tile menu width), 128 colours at CGRAM 128, dithered. Cols is a
-// fallback used only if AutoWidth can't measure the image.
+// DefaultOptions returns the sd2snes fork defaults: a fixed 8x6 landscape frame
+// (128x96 px) matching the libretro box aspect, letterboxed (whole box, no crop),
+// 8 OBJ palettes, dithered. The cover fills cols 16..31 (right of the menu logo).
 func DefaultOptions() Options {
-	return Options{Cols: 10, Rows: 7, CGBase: 128, Colors: 128, Dither: true, AutoWidth: true, MaxCols: 32}
+	return Options{WSpr: 8, HSpr: 6, NPalettes: 8, Dither: true, Fill: false, AutoSize: true}
+}
+
+// autoDims picks (w,h) in 16px sprites matching the source aspect, maximised within
+// maxW x maxH: landscape art -> wide cover, portrait/Japanese art -> tall & narrow,
+// so the cover fits its own box with minimal bars. The firmware right-/top-aligns by
+// w/h, so each cover sits in the top-right corner.
+func autoDims(img image.Image, maxW, maxH int) (w, h int) {
+	b := img.Bounds()
+	sw, sh := b.Dx(), b.Dy()
+	aspect := 1.0
+	if sh > 0 {
+		aspect = float64(sw) / float64(sh)
+	}
+	clamp := func(v, lo, hi int) int {
+		if v < lo {
+			return lo
+		}
+		if v > hi {
+			return hi
+		}
+		return v
+	}
+	if aspect >= 1.0 {
+		w = maxW
+		h = clamp(int(math.Round(float64(maxW)/aspect)), 1, maxH)
+	} else {
+		h = maxH
+		w = clamp(int(math.Round(float64(maxH)*aspect)), 1, maxW)
+	}
+	return
 }
 
 func (o Options) validate() error {
-	if o.CGBase < 16 || o.CGBase > 255 {
-		return fmt.Errorf("cgbase must be 16..255 (CGRAM 0..15 is reserved), got %d", o.CGBase)
+	if o.WSpr < 1 || o.WSpr > 8 {
+		return fmt.Errorf("wspr must be 1..8 (16-wide OBJ name grid), got %d", o.WSpr)
 	}
-	if o.Colors < 1 || o.CGBase+o.Colors > 256 {
-		return fmt.Errorf("colors must be 1..%d for cgbase %d, got %d", 256-o.CGBase, o.CGBase, o.Colors)
+	if o.HSpr < 1 || o.HSpr > 8 {
+		return fmt.Errorf("hspr must be 1..8 ((2*hspr)*16 <= 256 OBJ tiles), got %d", o.HSpr)
 	}
-	if o.Cols < 1 || o.Cols > 32 {
-		return fmt.Errorf("cols must be 1..32, got %d", o.Cols)
-	}
-	if o.Rows < 1 || o.Rows > 7 {
-		return fmt.Errorf("rows must be 1..7 (cover must fit the 56px header band), got %d", o.Rows)
-	}
-	if o.Cols*o.Rows > 224 {
-		return fmt.Errorf("cols*rows must be <= 224 tiles, got %d", o.Cols*o.Rows)
+	if o.NPalettes < 1 || o.NPalettes > 8 {
+		return fmt.Errorf("npalettes must be 1..8 (OBJ palettes), got %d", o.NPalettes)
 	}
 	return nil
-}
-
-// autoCols picks a column count that preserves the source aspect ratio while
-// the cover fills the fixed `rows` band height — so landscape boxart becomes
-// wider instead of being letterboxed into a square. Returns 0 if it can't
-// measure the image (caller keeps the fallback Cols).
-func autoCols(img image.Image, rows, maxCols int) int {
-	if maxCols <= 0 || maxCols > 32 {
-		maxCols = 32
-	}
-	b := img.Bounds()
-	if b.Dx() <= 0 || b.Dy() <= 0 || rows <= 0 {
-		return 0
-	}
-	aspect := float64(b.Dx()) / float64(b.Dy())
-	c := int(math.Round(float64(rows) * aspect))
-	if c < 1 {
-		c = 1
-	}
-	if c > maxCols {
-		c = maxCols
-	}
-	return c
 }
 
 // ConvertFile decodes the image at srcImage and writes a .cov file to dstCov.
@@ -114,58 +118,67 @@ func ConvertFile(srcImage, dstCov string, o Options) error {
 	return os.Rename(tmp, dstCov)
 }
 
-// Encode renders img into a .cov byte blob.
+// Encode renders img into a .cov v4 byte blob.
 func Encode(img image.Image, o Options) ([]byte, error) {
-	if o.AutoWidth {
-		if c := autoCols(img, o.Rows, o.MaxCols); c > 0 {
-			o.Cols = c
-		}
+	if o.AutoSize {
+		o.WSpr, o.HSpr = autoDims(img, 8, 8)
 	}
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	wpx, hpx := o.Cols*8, o.Rows*8
-	rgb, opaque := buildCanvas(img, wpx, hpx, o.Fill, o.KeepAlpha)
+	wpx, hpx := o.WSpr*16, o.HSpr*16
+	// keepAlpha=true so the letterbox bars stay transparent (index 0) and the
+	// floating sprite cover is a clean box (the list shows through the bars).
+	// topAlign=true: art touches the top, the (small) letterbox bar goes to the bottom
+	rgb, opaque := buildCanvas(img, wpx, hpx, o.Fill, true, true)
 
-	indices, palette := quantise8bpp(rgb, opaque, o.Colors, o.Dither)
-
-	// Map local palette index (1..ncolors) to CGRAM index (cgbase..); 0 stays 0.
-	cgidx := make([][]uint8, hpx)
+	// snap to the SNES 15-bit lattice before clustering (matches cover_conv.py)
 	for y := 0; y < hpx; y++ {
-		cgidx[y] = make([]uint8, wpx)
 		for x := 0; x < wpx; x++ {
-			if v := indices[y][x]; v > 0 {
-				cg := int(v) - 1 + o.CGBase
-				if cg > 255 {
-					return nil, fmt.Errorf("cgbase+ncolors overflow CGRAM (%d)", cg)
-				}
-				cgidx[y][x] = uint8(cg)
-			}
+			rgb[y][x][0] = snap555(rgb[y][x][0])
+			rgb[y][x][1] = snap555(rgb[y][x][1])
+			rgb[y][x][2] = snap555(rgb[y][x][2])
 		}
 	}
 
-	out := make([]byte, 0, headerSize+o.Colors*2+o.Cols*o.Rows*64)
+	// gather each 16x16 block's opaque pixels (row-major: sy*WSpr+sx)
+	blocks := make([][][3]int, o.WSpr*o.HSpr)
+	for sy := 0; sy < o.HSpr; sy++ {
+		for sx := 0; sx < o.WSpr; sx++ {
+			var pix [][3]int
+			for dy := 0; dy < 16; dy++ {
+				for dx := 0; dx < 16; dx++ {
+					y, x := sy*16+dy, sx*16+dx
+					if opaque[y][x] {
+						pix = append(pix, rgb[y][x])
+					}
+				}
+			}
+			blocks[sy*o.WSpr+sx] = pix
+		}
+	}
+
+	palettes, blockmap := clusterBlockPalettes(blocks, o.WSpr, o.HSpr, o.NPalettes)
+	nEmit := len(palettes)
+	idx := quantiseImageCrossblock(rgb, opaque, palettes, blockmap, o.WSpr, o.HSpr, o.Dither)
+
+	palBlock := encodePalettesV4(palettes)
+	tileBlock := encodeTilesNameGrid(idx, o.WSpr, o.HSpr)
+
 	flags := byte(0)
 	if o.Dither {
 		flags = 0x01
 	}
-	// HEADER (12 bytes), little-endian.
+	out := make([]byte, 0, headerSize+len(palBlock)+len(blockmap)+len(tileBlock))
+	// HEADER (12 bytes): magic, ver=4, flags, w_spr, h_spr, n_palettes, rsvd, bpp=4, rsvd*3
 	out = append(out,
 		magic0, magic1, version, flags,
-		byte(o.Cols), byte(o.Rows), byte(o.CGBase), byte(o.Colors-1), bpp,
+		byte(o.WSpr), byte(o.HSpr), byte(nEmit), 0, bpp,
 		0, 0, 0,
 	)
-	// PALETTE (ncolors * 2 bytes, BGR555 LE).
-	for _, c := range palette {
-		w := rgbToBGR555(c[0], c[1], c[2])
-		out = append(out, byte(w&0xFF), byte((w>>8)&0xFF))
-	}
-	// TILES (cols*rows * 64 bytes, 8bpp planar, row-major).
-	for ty := 0; ty < o.Rows; ty++ {
-		for tx := 0; tx < o.Cols; tx++ {
-			out = append(out, encodeTile(cgidx, tx*8, ty*8)...)
-		}
-	}
+	out = append(out, palBlock...)  // PALETTES (n_palettes * 16 BGR555 LE)
+	out = append(out, blockmap...)  // BLOCKMAP (w_spr*h_spr palette indices)
+	out = append(out, tileBlock...) // TILES (4bpp planar, name-grid order)
 	return out, nil
 }
 
@@ -185,8 +198,8 @@ func bgr555ToRGB(word int) (r, g, b int) {
 	return
 }
 
-// snap555 snaps a 0..255 channel onto the SNES 15-bit lattice (matches the
-// Python snap555: top 5 bits, low 3 bits replicated from the top of the 5).
+// snap555 snaps a 0..255 channel onto the SNES 15-bit lattice (top 5 bits, low 3
+// replicated from the top of the 5).
 func snap555(v int) int {
 	hi := v >> 3
 	s := (hi << 3) | (hi >> 2)
@@ -198,10 +211,12 @@ func snap555(v int) int {
 
 // --- image -> canvas ---
 
-// buildCanvas letterbox-fits (or crop-fills) img into a wpx*hpx canvas over a
-// black background, returning the RGB grid and an opacity mask. With keepAlpha
-// false the whole canvas is opaque (letterbox bars become opaque black).
-func buildCanvas(src image.Image, wpx, hpx int, fill, keepAlpha bool) (rgb [][][3]int, opaque [][]bool) {
+// buildCanvas letterbox-fits (or crop-fills) src into a wpx*hpx canvas over a black
+// background, returning the RGB grid and an opacity mask. With keepAlpha true the
+// padded/transparent area is opaque=false (transparent letterbox bars); the art's
+// own alpha is honoured too. With topAlign true the art is TOP-aligned (the
+// letterbox bar goes to the bottom) so the cover touches the top of the screen.
+func buildCanvas(src image.Image, wpx, hpx int, fill, keepAlpha, topAlign bool) (rgb [][][3]int, opaque [][]bool) {
 	b := src.Bounds()
 	sw, sh := b.Dx(), b.Dy()
 	if sw < 1 {
@@ -243,6 +258,9 @@ func buildCanvas(src image.Image, wpx, hpx int, fill, keepAlpha bool) (rgb [][][
 
 	offx := (wpx - nw) / 2
 	offy := (hpx - nh) / 2
+	if topAlign {
+		offy = 0 // art touches the top; the letterbox bar goes to the bottom
+	}
 	for y := 0; y < nh; y++ {
 		cy := offy + y
 		if cy < 0 || cy >= hpx {
@@ -254,8 +272,8 @@ func buildCanvas(src image.Image, wpx, hpx int, fill, keepAlpha bool) (rgb [][][
 				continue
 			}
 			p := resized.NRGBAAt(x, y)
-			// composite straight-alpha pixel over a black background
 			a := int(p.A)
+			// composite straight-alpha pixel over a black background
 			rgb[cy][cx] = [3]int{
 				int(p.R) * a / 255,
 				int(p.G) * a / 255,
@@ -269,49 +287,169 @@ func buildCanvas(src image.Image, wpx, hpx int, fill, keepAlpha bool) (rgb [][][
 	return rgb, opaque
 }
 
-// --- quantisation ---
+// --- per-block palette clustering (<=8 OBJ palettes) ---
 
-// quantise8bpp returns the per-pixel palette indices (1..ncolors for opaque
-// pixels, 0 elsewhere) and the palette of exactly ncolors (r,g,b) entries.
-func quantise8bpp(rgb [][][3]int, opaque [][]bool, ncolors int, dither bool) (indices [][]uint8, palette [][3]int) {
+// paletteFitError is the total nearest-colour squared error of pixels against a
+// palette (0 for an empty pixel set).
+func paletteFitError(pix, pal [][3]int) float64 {
+	var total float64
+	for _, p := range pix {
+		best := math.MaxFloat64
+		for _, c := range pal {
+			dr := float64(p[0] - c[0])
+			dg := float64(p[1] - c[1])
+			db := float64(p[2] - c[2])
+			d := dr*dr + dg*dg + db*db
+			if d < best {
+				best = d
+			}
+		}
+		total += best
+	}
+	return total
+}
+
+// clusterBlockPalettes builds <=nPalettes shared 15-colour palettes and assigns
+// each 16x16 block to one, minimising per-pixel quantisation error (deterministic
+// farthest-point k-means). blocks is row-major (sy*wSpr+sx) opaque pixels per block.
+func clusterBlockPalettes(blocks [][][3]int, wSpr, hSpr, nPalettes int) (palettes [][][3]int, blockmap []uint8) {
+	nb := wSpr * hSpr
+	blockmap = make([]uint8, nb)
+
+	var nonempty []int
+	for i := 0; i < nb; i++ {
+		if len(blocks[i]) > 0 {
+			nonempty = append(nonempty, i)
+		}
+	}
+	if len(nonempty) == 0 {
+		return [][][3]int{make([][3]int, 15)}, blockmap // a single black palette
+	}
+
+	k := nPalettes
+	if k > len(nonempty) {
+		k = len(nonempty)
+	}
+
+	blockPal := make(map[int][][3]int, len(nonempty))
+	for _, i := range nonempty {
+		blockPal[i] = medianCut(blocks[i], 15)
+	}
+
+	// farthest-point init: seed 0 = the block with the most opaque pixels, then
+	// repeatedly add the block worst-fit (per pixel) by the current seed palettes.
+	seeds := []int{nonempty[0]}
+	for _, i := range nonempty {
+		if len(blocks[i]) > len(blocks[seeds[0]]) {
+			seeds[0] = i
+		}
+	}
+	inSeeds := func(i int) bool {
+		for _, s := range seeds {
+			if s == i {
+				return true
+			}
+		}
+		return false
+	}
+	for len(seeds) < k {
+		bestI, bestErr := -1, -1.0
+		for _, i := range nonempty {
+			if inSeeds(i) {
+				continue
+			}
+			minErr := math.MaxFloat64
+			for _, s := range seeds {
+				if e := paletteFitError(blocks[i], blockPal[s]); e < minErr {
+					minErr = e
+				}
+			}
+			errn := minErr / math.Max(1, float64(len(blocks[i])))
+			if errn > bestErr {
+				bestErr, bestI = errn, i
+			}
+		}
+		if bestI < 0 {
+			break
+		}
+		seeds = append(seeds, bestI)
+	}
+
+	centroids := make([][][3]int, k)
+	for c := 0; c < k; c++ {
+		centroids[c] = append([][3]int(nil), blockPal[seeds[c]]...)
+	}
+	assign := make([]int, nb)
+	for i := range assign {
+		assign[i] = -1
+	}
+	for it := 0; it < 8; it++ {
+		changed := false
+		for _, i := range nonempty {
+			bestC, bestE := 0, math.MaxFloat64
+			for c := 0; c < k; c++ {
+				if e := paletteFitError(blocks[i], centroids[c]); e < bestE {
+					bestE, bestC = e, c
+				}
+			}
+			if assign[i] != bestC {
+				changed = true
+			}
+			assign[i] = bestC
+		}
+		for c := 0; c < k; c++ {
+			var allpix [][3]int
+			for _, i := range nonempty {
+				if assign[i] == c {
+					allpix = append(allpix, blocks[i]...)
+				}
+			}
+			if len(allpix) > 0 {
+				centroids[c] = medianCut(allpix, 15)
+			}
+		}
+		if !changed && it > 0 {
+			break
+		}
+	}
+
+	palettes = centroids
+	for _, i := range nonempty {
+		blockmap[i] = uint8(assign[i])
+	}
+	return palettes, blockmap
+}
+
+// --- quantisation (cross-block Floyd-Steinberg) ---
+
+// quantiseImageCrossblock quantises the whole image to 4bpp indices (0 transparent,
+// 1..15) where each pixel uses its 16x16 block's assigned palette. Floyd-Steinberg
+// error diffuses ACROSS block boundaries, removing visible block seams in gradients.
+func quantiseImageCrossblock(rgb [][][3]int, opaque [][]bool, palettes [][][3]int, blockmap []uint8, wSpr, hSpr int, dither bool) [][]uint8 {
 	h := len(rgb)
 	w := 0
 	if h > 0 {
 		w = len(rgb[0])
 	}
-
-	var opx [][3]int
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			if opaque[y][x] {
-				p := rgb[y][x]
-				opx = append(opx, [3]int{snap555(p[0]), snap555(p[1]), snap555(p[2])})
-			}
-		}
+	idx := make([][]uint8, h)
+	for y := range idx {
+		idx[y] = make([]uint8, w)
 	}
-	palette = medianCut(opx, ncolors)
-
-	indices = make([][]uint8, h)
-	for y := 0; y < h; y++ {
-		indices[y] = make([]uint8, w)
-	}
-	if len(opx) == 0 {
-		return indices, palette
+	blockPalAt := func(y, x int) [][3]int {
+		return palettes[blockmap[(y/16)*wSpr+(x/16)]]
 	}
 
 	if !dither {
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
 				if opaque[y][x] {
-					indices[y][x] = uint8(nearest(rgb[y][x], palette) + 1)
+					idx[y][x] = uint8(nearest(rgb[y][x], blockPalAt(y, x)) + 1)
 				}
 			}
 		}
-		return indices, palette
+		return idx
 	}
 
-	// Floyd-Steinberg over the opaque region (errors diffuse to opaque pixels
-	// only), matching cover_conv.py exactly.
 	work := make([][][3]float64, h)
 	for y := 0; y < h; y++ {
 		work[y] = make([][3]float64, w)
@@ -324,18 +462,19 @@ func quantise8bpp(rgb [][][3]int, opaque [][]bool, ncolors int, dither bool) (in
 			if !opaque[y][x] {
 				continue
 			}
+			pal := blockPalAt(y, x)
 			old := work[y][x]
-			k := nearestF(old, palette)
-			newc := palette[k]
-			indices[y][x] = uint8(k + 1)
-			err := [3]float64{old[0] - float64(newc[0]), old[1] - float64(newc[1]), old[2] - float64(newc[2])}
+			k := nearestF(old, pal)
+			idx[y][x] = uint8(k + 1)
+			newc := pal[k]
+			errc := [3]float64{old[0] - float64(newc[0]), old[1] - float64(newc[1]), old[2] - float64(newc[2])}
 			diffuse := func(yy, xx int, f float64) {
 				if yy < 0 || yy >= h || xx < 0 || xx >= w || !opaque[yy][xx] {
 					return
 				}
-				work[yy][xx][0] += err[0] * f
-				work[yy][xx][1] += err[1] * f
-				work[yy][xx][2] += err[2] * f
+				work[yy][xx][0] += errc[0] * f
+				work[yy][xx][1] += errc[1] * f
+				work[yy][xx][2] += errc[2] * f
 			}
 			diffuse(y, x+1, 7.0/16)
 			diffuse(y+1, x-1, 3.0/16)
@@ -343,7 +482,7 @@ func quantise8bpp(rgb [][][3]int, opaque [][]bool, ncolors int, dither bool) (in
 			diffuse(y+1, x+1, 1.0/16)
 		}
 	}
-	return indices, palette
+	return idx
 }
 
 func nearest(p [3]int, pal [][3]int) int {
@@ -371,8 +510,8 @@ func nearestF(p [3]float64, pal [][3]int) int {
 	return best
 }
 
-// medianCut reduces pixels to exactly ncolors representative colours (padded
-// with black when there are too few distinct colours).
+// medianCut reduces pixels to exactly ncolors representative colours (padded with
+// black when there are too few distinct colours).
 func medianCut(pixels [][3]int, ncolors int) [][3]int {
 	out := make([][3]int, ncolors)
 	if len(pixels) == 0 {
@@ -430,24 +569,62 @@ func medianCut(pixels [][3]int, ncolors int) [][3]int {
 	return out
 }
 
-// --- tile encoding ---
+// --- encoding ---
 
-// encodeTile encodes the 8x8 block at (x0,y0) of cgidx into 64 bytes of SNES
-// 8bpp planar tile data (plane-pairs 0&1,2&3,4&5,6&7 in 16-byte groups).
-func encodeTile(cgidx [][]uint8, x0, y0 int) []byte {
-	out := make([]byte, 64)
-	for row := 0; row < 8; row++ {
-		var planes [8]int
-		for col := 0; col < 8; col++ {
-			v := int(cgidx[y0+row][x0+col])
-			bit := 7 - col
-			for p := 0; p < 8; p++ {
-				planes[p] |= ((v >> p) & 1) << bit
+// encodePalettesV4 emits each palette as 16 BGR555 LE entries: index 0 = transparent
+// (0), entries 1..15 = the 15 colours.
+func encodePalettesV4(palettes [][][3]int) []byte {
+	out := make([]byte, 0, len(palettes)*16*2)
+	for _, pal := range palettes {
+		out = append(out, 0, 0) // index 0 = transparent
+		for i := 0; i < 15; i++ {
+			var r, g, b int
+			if i < len(pal) {
+				r, g, b = pal[i][0], pal[i][1], pal[i][2]
 			}
+			w := rgbToBGR555(r, g, b)
+			out = append(out, byte(w&0xFF), byte((w>>8)&0xFF))
 		}
-		for pair := 0; pair < 4; pair++ {
-			out[pair*16+row*2] = byte(planes[pair*2])
-			out[pair*16+row*2+1] = byte(planes[pair*2+1])
+	}
+	return out
+}
+
+// encodeTile4bpp encodes the 8x8 block at (x0,y0) of idx into 32 bytes of SNES 4bpp
+// planar tile data (bytes 0..15 = bitplanes 0&1 row-interleaved, 16..31 = 2&3).
+func encodeTile4bpp(idx [][]uint8, x0, y0 int) []byte {
+	out := make([]byte, 32)
+	for row := 0; row < 8; row++ {
+		var p0, p1, p2, p3 int
+		for col := 0; col < 8; col++ {
+			v := int(idx[y0+row][x0+col]) & 0x0F
+			bit := 7 - col
+			p0 |= ((v >> 0) & 1) << bit
+			p1 |= ((v >> 1) & 1) << bit
+			p2 |= ((v >> 2) & 1) << bit
+			p3 |= ((v >> 3) & 1) << bit
+		}
+		out[row*2] = byte(p0)
+		out[row*2+1] = byte(p1)
+		out[16+row*2] = byte(p2)
+		out[16+row*2+1] = byte(p3)
+	}
+	return out
+}
+
+// encodeTilesNameGrid emits a (2*hSpr) row x 16 col grid of 8x8 4bpp tiles (right
+// columns past 2*wSpr zero-filled). The OBJ tile number for sprite (sx,sy) is
+// (2*sy)*16 + 2*sx, matching this streamed order.
+func encodeTilesNameGrid(idx [][]uint8, wSpr, hSpr int) []byte {
+	ncolsUsed := 2 * wSpr
+	out := make([]byte, 0, (2*hSpr)*16*32)
+	zero := make([]byte, 32)
+	for cy := 0; cy < 2*hSpr; cy++ {
+		for cx := 0; cx < 16; cx++ {
+			if cx < ncolsUsed {
+				out = append(out, encodeTile4bpp(idx, cx*8, cy*8)...)
+			} else {
+				out = append(out, zero...)
+			}
 		}
 	}
 	return out
@@ -455,63 +632,68 @@ func encodeTile(cgidx [][]uint8, x0, y0 int) []byte {
 
 // --- decoder (for round-trip tests / QA) ---
 
-// Decoded is the result of decoding a .cov blob.
+// Decoded is the result of decoding a .cov v4 blob.
 type Decoded struct {
-	Cols, Rows int
-	CGBase     int
-	Colors     int
+	WSpr, HSpr int
+	NPalettes  int
 	Dithered   bool
-	Palette    [][3]int // ncolors RGB (expanded from BGR555)
-	// Pixels holds CGRAM indices, Rows*8 high by Cols*8 wide.
-	Pixels [][]uint8
+	Palettes   [][][3]int // NPalettes x 16 RGB (index 0 transparent)
+	Blockmap   []uint8    // WSpr*HSpr palette indices
+	// Tiles holds the decoded name-grid indices, (2*HSpr*8) high by (16*8) wide.
+	Tiles [][]uint8
 }
 
-// Decode parses a .cov blob (mirrors cover_conv.py verify_cov).
+// Decode parses a .cov v4 blob (mirrors cover_conv.py verify_cov_v4).
 func Decode(blob []byte) (*Decoded, error) {
-	if len(blob) < headerSize || blob[0] != magic0 || blob[1] != magic1 || blob[2] != version {
-		return nil, fmt.Errorf("not a .cov file")
+	if len(blob) < headerSize || blob[0] != magic0 || blob[1] != magic1 ||
+		blob[2] != version || blob[8] != bpp {
+		return nil, fmt.Errorf("not a .cov v4 file")
 	}
 	d := &Decoded{
-		Dithered: blob[3]&0x01 != 0,
-		Cols:     int(blob[4]),
-		Rows:     int(blob[5]),
-		CGBase:   int(blob[6]),
-		Colors:   int(blob[7]) + 1,
+		Dithered:  blob[3]&0x01 != 0,
+		WSpr:      int(blob[4]),
+		HSpr:      int(blob[5]),
+		NPalettes: int(blob[6]),
 	}
 	off := headerSize
-	if len(blob) < off+d.Colors*2+d.Cols*d.Rows*64 {
-		return nil, fmt.Errorf("truncated .cov file")
+	palSize := d.NPalettes * 16 * 2
+	bmSize := d.WSpr * d.HSpr
+	tilesSize := (2 * d.HSpr) * 16 * 32
+	if len(blob) < off+palSize+bmSize+tilesSize {
+		return nil, fmt.Errorf("truncated .cov v4 file")
 	}
-	d.Palette = make([][3]int, d.Colors)
-	for i := 0; i < d.Colors; i++ {
-		w := int(blob[off]) | int(blob[off+1])<<8
-		r, g, b := bgr555ToRGB(w)
-		d.Palette[i] = [3]int{r, g, b}
-		off += 2
+
+	d.Palettes = make([][][3]int, d.NPalettes)
+	for p := 0; p < d.NPalettes; p++ {
+		d.Palettes[p] = make([][3]int, 16)
+		for i := 0; i < 16; i++ {
+			w := int(blob[off]) | int(blob[off+1])<<8
+			r, g, b := bgr555ToRGB(w)
+			d.Palettes[p][i] = [3]int{r, g, b}
+			off += 2
+		}
 	}
-	hpx, wpx := d.Rows*8, d.Cols*8
-	d.Pixels = make([][]uint8, hpx)
-	for y := 0; y < hpx; y++ {
-		d.Pixels[y] = make([]uint8, wpx)
+
+	d.Blockmap = append([]uint8(nil), blob[off:off+bmSize]...)
+	off += bmSize
+
+	rows, cols := 2*d.HSpr, 16
+	d.Tiles = make([][]uint8, rows*8)
+	for y := range d.Tiles {
+		d.Tiles[y] = make([]uint8, cols*8)
 	}
-	for ty := 0; ty < d.Rows; ty++ {
-		for tx := 0; tx < d.Cols; tx++ {
-			tile := blob[off : off+64]
-			off += 64
+	for cy := 0; cy < rows; cy++ {
+		for cx := 0; cx < cols; cx++ {
+			tile := blob[off : off+32]
+			off += 32
 			for row := 0; row < 8; row++ {
-				p := [8]byte{
-					tile[0+row*2], tile[0+row*2+1],
-					tile[16+row*2], tile[16+row*2+1],
-					tile[32+row*2], tile[32+row*2+1],
-					tile[48+row*2], tile[48+row*2+1],
-				}
+				p0, p1 := tile[row*2], tile[row*2+1]
+				p2, p3 := tile[16+row*2], tile[16+row*2+1]
 				for col := 0; col < 8; col++ {
 					bit := uint(7 - col)
-					var v int
-					for pl := 0; pl < 8; pl++ {
-						v |= int((p[pl]>>bit)&1) << pl
-					}
-					d.Pixels[ty*8+row][tx*8+col] = uint8(v)
+					v := int((p0>>bit)&1) | int((p1>>bit)&1)<<1 |
+						int((p2>>bit)&1)<<2 | int((p3>>bit)&1)<<3
+					d.Tiles[cy*8+row][cx*8+col] = uint8(v)
 				}
 			}
 		}
@@ -519,22 +701,31 @@ func Decode(blob []byte) (*Decoded, error) {
 	return d, nil
 }
 
-// Image renders a Decoded cover to an RGBA image (index 0 = transparent).
+// Image renders a Decoded cover to an RGBA image (index 0 = transparent). Each
+// 16x16 sprite (sx,sy) reads name-grid cells (2sy,2sx),(2sy,2sx+1),(2sy+1,2sx),
+// (2sy+1,2sx+1) and colours them with its block's palette.
 func (d *Decoded) Image() image.Image {
-	img := image.NewRGBA(image.Rect(0, 0, d.Cols*8, d.Rows*8))
+	img := image.NewRGBA(image.Rect(0, 0, d.WSpr*16, d.HSpr*16))
 	draw.Draw(img, img.Bounds(), image.Transparent, image.Point{}, draw.Src)
-	for y := range d.Pixels {
-		for x, v := range d.Pixels[y] {
-			if int(v) < d.CGBase {
-				continue // transparent / below palette
+	for sy := 0; sy < d.HSpr; sy++ {
+		for sx := 0; sx < d.WSpr; sx++ {
+			pi := int(d.Blockmap[sy*d.WSpr+sx])
+			if pi < 0 || pi >= d.NPalettes {
+				pi = 0
 			}
-			idx := int(v) - d.CGBase
-			if idx < 0 || idx >= len(d.Palette) {
-				img.Set(x, y, color.RGBA{255, 0, 255, 255})
-				continue
+			pal := d.Palettes[pi]
+			for dy := 0; dy < 16; dy++ {
+				for dx := 0; dx < 16; dx++ {
+					cy := 2*sy + dy/8
+					cx := 2*sx + dx/8
+					v := int(d.Tiles[cy*8+dy%8][cx*8+dx%8])
+					if v == 0 {
+						continue // transparent
+					}
+					c := pal[v]
+					img.Set(sx*16+dx, sy*16+dy, color.RGBA{uint8(c[0]), uint8(c[1]), uint8(c[2]), 255})
+				}
 			}
-			c := d.Palette[idx]
-			img.Set(x, y, color.RGBA{uint8(c[0]), uint8(c[1]), uint8(c[2]), 255})
 		}
 	}
 	return img

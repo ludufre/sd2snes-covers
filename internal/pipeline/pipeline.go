@@ -50,7 +50,7 @@ func (c CovStatus) String() string {
 	case CovError:
 		return "Error"
 	default:
-		return "—"
+		return "-" // ASCII so it stays readable in CSV (Excel ignores the BOM with sep=)
 	}
 }
 
@@ -60,6 +60,7 @@ type RowResult struct {
 	ROMName string // original basename at scan time
 	CRC     string
 	Match   string // No-Intro game name, or "" when not found in the DAT
+	URL     string // boxart URL for the match ("" when there is no match)
 	Cover   thumbs.Status
 	NewName string // basename after rename, or "" when not renamed
 	Cov     CovStatus
@@ -85,6 +86,14 @@ func Run(ctx context.Context, roms []string, index dat.Index, opts Options, out 
 	client := thumbs.NewClient()
 	total := len(roms)
 
+	// Boxart PNGs are cached between runs (so re-runs and duplicate ROMs don't
+	// re-download); the cache persists and is cleared explicitly from Settings.
+	// An empty cacheDir means "fall back to downloading next to the ROM".
+	cacheDir, cerr := BoxartCacheDir()
+	if cerr != nil {
+		cacheDir = ""
+	}
+
 	jobs := make(chan string)
 	results := make(chan RowResult)
 
@@ -94,7 +103,7 @@ func Run(ctx context.Context, roms []string, index dat.Index, opts Options, out 
 		go func() {
 			defer wg.Done()
 			for romPath := range jobs {
-				results <- process(ctx, client, index, opts, romPath)
+				results <- process(ctx, client, index, opts, cacheDir, romPath)
 			}
 		}()
 	}
@@ -122,7 +131,7 @@ func Run(ctx context.Context, roms []string, index dat.Index, opts Options, out 
 	}
 }
 
-func process(ctx context.Context, client *http.Client, index dat.Index, opts Options, romPath string) RowResult {
+func process(ctx context.Context, client *http.Client, index dat.Index, opts Options, cacheDir, romPath string) RowResult {
 	row := RowResult{ROMPath: romPath, ROMName: filepath.Base(romPath)}
 
 	crc, _, err := snes.CRC32Headerless(romPath)
@@ -139,6 +148,11 @@ func process(ctx context.Context, client *http.Client, index dat.Index, opts Opt
 		return row
 	}
 	row.Match = name
+	base := opts.BoxartBase
+	if base == "" {
+		base = thumbs.DefaultBoxartBase
+	}
+	row.URL = thumbs.BoxartURLFrom(base, name) // recorded in the CSV (the URL that 404s on "Not found")
 
 	// Optional rename to the No-Intro name (keep the original extension).
 	if opts.Rename {
@@ -151,35 +165,146 @@ func process(ctx context.Context, client *http.Client, index dat.Index, opts Opt
 		}
 	}
 
-	coverPath := CoverPath(romPath)
-	status, derr := thumbs.Download(ctx, client, opts.BoxartBase, name, coverPath, opts.Overwrite)
-	row.Cover = status
-	if derr != nil && row.Err == nil {
-		row.Err = derr
+	finalPNG := CoverPath(romPath) // <rom>.png next to the ROM (written only when not making a .cov)
+	covPath := CovPath(romPath)    // <rom>.cov next to the ROM
+
+	// When "Overwrite existing" is off, skip work whose primary output already
+	// exists. The primary output is the .cov when MakeCov is on, otherwise the
+	// boxart PNG next to the ROM.
+	if !opts.Overwrite {
+		if opts.MakeCov {
+			if fileExists(covPath) {
+				row.Cover = thumbs.StatusSkip
+				row.Cov = CovSkip
+				return row
+			}
+		} else if fileExists(finalPNG) {
+			row.Cover = thumbs.StatusSkip
+			return row
+		}
 	}
 
-	// Optional .cov generation from the cover image next to the ROM.
+	// Obtain the boxart: reuse the persistent cache when present, otherwise
+	// download into it. The cache is keyed by the game's boxart filename, so the
+	// same game is fetched only once across runs and across duplicate ROMs.
+	cachePNG := finalPNG // fallback target when there is no cache dir
+	if cacheDir != "" {
+		cachePNG = filepath.Join(cacheDir, thumbs.Sanitize(name)+".png")
+	}
+	if cacheDir != "" && fileExists(cachePNG) {
+		row.Cover = thumbs.StatusOK // cache hit
+	} else {
+		status, derr := thumbs.Download(ctx, client, opts.BoxartBase, name, cachePNG, true)
+		row.Cover = status
+		if derr != nil && row.Err == nil {
+			row.Err = derr
+		}
+		if status != thumbs.StatusOK {
+			return row // 404 or error: nothing to produce
+		}
+	}
+
+	// Produce the output next to the ROM, keeping the cached PNG intact.
 	if opts.MakeCov {
-		row.Cov = makeCov(coverPath, romPath, opts)
+		row.Cov = makeCov(cachePNG, covPath, opts)
+	} else if cachePNG != finalPNG {
+		// .cov not requested: copy the cached boxart next to the ROM
+		if err := copyFile(cachePNG, finalPNG); err != nil && row.Err == nil {
+			row.Err = err
+			row.Cover = thumbs.StatusError
+		}
 	}
 	return row
 }
 
-// makeCov converts the cover PNG next to the ROM into a .cov file.
-func makeCov(coverPath, romPath string, opts Options) CovStatus {
-	if _, err := os.Stat(coverPath); err != nil {
-		return CovNone // no source image to convert
+// makeCov converts pngPath into covPath, honoring the overwrite option.
+func makeCov(pngPath, covPath string, opts Options) CovStatus {
+	if !opts.Overwrite && fileExists(covPath) {
+		return CovSkip
 	}
-	covPath := strings.TrimSuffix(romPath, filepath.Ext(romPath)) + ".cov"
-	if !opts.Overwrite {
-		if _, err := os.Stat(covPath); err == nil {
-			return CovSkip
-		}
-	}
-	if err := cov.ConvertFile(coverPath, covPath, opts.CovOpts); err != nil {
+	if err := cov.ConvertFile(pngPath, covPath, opts.CovOpts); err != nil {
 		return CovError
 	}
 	return CovOK
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// copyFile copies src to dst atomically (temp file + rename), leaving src in
+// place — used to place a cached boxart next to a ROM without consuming the cache.
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".cp-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// BoxartCacheDir returns the directory where downloaded boxart PNGs are cached
+// between runs, creating it on demand. Override with SD2SNES_COVERS_CACHE.
+func BoxartCacheDir() (string, error) {
+	dir := os.Getenv("SD2SNES_COVERS_CACHE")
+	if dir == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			base = os.TempDir()
+		}
+		dir = filepath.Join(base, "sd2snes-covers", "boxart")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// ClearBoxartCache deletes every cached boxart PNG, returning how many files
+// were removed and how many bytes were freed.
+func ClearBoxartCache() (files int, freed int64, err error) {
+	dir, derr := BoxartCacheDir()
+	if derr != nil {
+		return 0, 0, derr
+	}
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil {
+		return 0, 0, rerr
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if info, ierr := e.Info(); ierr == nil {
+			freed += info.Size()
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			files++
+		}
+	}
+	return files, freed, nil
 }
 
 // renameToNoIntro renames romPath to "<fs-safe No-Intro name><ext>" in the same
@@ -254,10 +379,23 @@ func CoverPath(romPath string) string {
 	return strings.TrimSuffix(romPath, ext) + ".png"
 }
 
-// WriteCSV writes the results as CSV (UTF-8) to w.
+// CovPath returns the .cov path next to the ROM (e.g. /games/smw.sfc -> /games/smw.cov).
+func CovPath(romPath string) string {
+	ext := filepath.Ext(romPath)
+	return strings.TrimSuffix(romPath, ext) + ".cov"
+}
+
+// WriteCSV writes the results as CSV to w. Fields are RFC-4180 quoted by
+// encoding/csv (commas, quotes and newlines are escaped). A UTF-8 BOM and an
+// Excel "sep=," hint are prepended, with CRLF line endings, so spreadsheets
+// open it with the right columns and accents in any locale.
 func WriteCSV(w io.Writer, rows []RowResult) error {
+	if _, err := io.WriteString(w, "\ufeffsep=,\r\n"); err != nil {
+		return err
+	}
 	cw := csv.NewWriter(w)
-	header := []string{"File", "CRC32", "No-Intro", "Cover", "Renamed to", "cov", "Error"}
+	cw.UseCRLF = true
+	header := []string{"File", "CRC32", "No-Intro", "Cover", "Renamed to", "cov", "Boxart URL", "Error"}
 	if err := cw.Write(header); err != nil {
 		return err
 	}
@@ -266,7 +404,7 @@ func WriteCSV(w io.Writer, rows []RowResult) error {
 		if r.Err != nil {
 			errMsg = r.Err.Error()
 		}
-		rec := []string{r.ROMName, r.CRC, r.Match, r.Cover.String(), r.NewName, r.Cov.String(), errMsg}
+		rec := []string{r.ROMName, r.CRC, r.Match, r.Cover.String(), r.NewName, r.Cov.String(), r.URL, errMsg}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

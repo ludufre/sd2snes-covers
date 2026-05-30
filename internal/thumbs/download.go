@@ -26,7 +26,7 @@ func (s Status) String() string {
 	case StatusOK:
 		return "OK"
 	case StatusNotFound:
-		return "404"
+		return "Not found"
 	case StatusSkip:
 		return "Skipped"
 	case StatusNoMatch:
@@ -93,14 +93,18 @@ func fetch(ctx context.Context, client *http.Client, u, destPNG string) (Status,
 		return StatusError, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(destPNG), 0o755); err != nil {
+	dir := filepath.Dir(destPNG)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return StatusError, err
 	}
-	tmp := destPNG + ".tmp"
-	out, err := os.Create(tmp)
+	// Unique temp name so concurrent downloads to the same destination (e.g. two
+	// ROMs of the same game sharing one cache file) never clobber each other;
+	// the final rename is atomic, so the last writer wins with complete content.
+	out, err := os.CreateTemp(dir, ".dl-*.png")
 	if err != nil {
 		return StatusError, err
 	}
+	tmp := out.Name()
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		out.Close()
 		os.Remove(tmp)

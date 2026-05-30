@@ -17,7 +17,7 @@ import (
 )
 
 // DefaultURL is the libretro No-Intro DAT for Super Nintendo.
-const DefaultURL = "https://raw.githubusercontent.com/libretro/libretro-database/refs/heads/master/metadat/no-intro/Nintendo%20-%20Super%20Nintendo%20Entertainment%20System.dat"
+const DefaultURL = "https://raw.githubusercontent.com/ludufre/sd2snes-covers/refs/heads/main/dats/libretro-custom.dat"
 
 // Index maps an uppercase 8-hex CRC32 to a No-Intro game name.
 type Index map[string]string

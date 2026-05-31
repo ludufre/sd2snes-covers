@@ -26,6 +26,7 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 | Feature | Description |
 |---|---|
 | 🧩 **Generate `.cov`** ⭐ | Converts each cover into the firmware's `.cov` (OBJ-sprite cover) format, saved as `<rom>.cov` next to the ROM — **the main goal.** |
+| ⚡ **Just convert to `.cov`** | Have your own art already? Point it at a folder of images and convert each one straight to a `.cov` next to it (`cover.png` → `cover.cov`) — no CRC32, no DAT, no download. Accepts **PNG / JPG / BMP**. |
 | 🔎 **Recursive scan** | Finds every `.sfc` / `.smc` in a folder and its subfolders. |
 | 🧮 **Match by CRC32** | Identifies each game by its *headerless* CRC32 against the libretro No-Intro DAT (4256 games). |
 | 🖼️ **Box art download** | Fetches the official `.png` from `thumbnails.libretro.com` (the source image for the `.cov`), saved next to the ROM. |
@@ -45,6 +46,10 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 The No-Intro DAT is downloaded once and cached; **Refresh DAT** forces a re-download. Downloaded box art is also cached between runs (so re-runs and duplicate ROMs don't re-download); **Settings → Clear cover cache** empties it. When **Generate .cov** is off, the cached PNG is copied next to the ROM instead. Use **Settings** to change the No-Intro DAT URL or the cover repository URL (saved across runs). A link to the [firmware fork](https://github.com/ludufre/sd2snes) sits at the bottom of the window.
 
 Per-ROM status: **OK** · **Not found** (in the DAT, but no cover on the server) · **Skipped** (file already exists) · **No match** (CRC not in the DAT) · **Error** (network/IO).
+
+### Already have your own art? — Just convert to `.cov`
+
+Click **Just convert to .cov**, pick a folder of images, and every **PNG / JPG / BMP** in it (subfolders included) is converted straight to a `.cov` next to it (`cover.png` → `cover.cov`). No CRC32, no DAT, no download — it just runs the image through the same `.cov` encoder. **Overwrite existing** is honored (existing `.cov` files are skipped when it's off).
 
 ## 📦 Install
 

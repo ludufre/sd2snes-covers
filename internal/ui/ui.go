@@ -33,7 +33,7 @@ import (
 var headers = [5]string{"ROM", "CRC32", "No-Intro Match", "Cover", ".cov"}
 
 // Version is shown in the status bar and the window title.
-const Version = "v1.1.0"
+const Version = "v1.2.0"
 
 // preference keys (persisted via Fyne preferences)
 const (
@@ -84,6 +84,7 @@ type UI struct {
 	settingsBtn *widget.Button
 	startBtn    *widget.Button
 	csvBtn      *widget.Button
+	convertBtn  *widget.Button // "just convert to .cov": image folder -> .cov, no DAT
 	overwrite   *widget.Check
 	renameCheck *widget.Check
 	covCheck    *widget.Check
@@ -129,6 +130,7 @@ func New(w fyne.Window) *UI {
 	u.refreshBtn = widget.NewButton("Refresh DAT", func() { u.loadDAT(true, nil) })
 	u.settingsBtn = widget.NewButton("Settings", u.onSettings)
 	u.csvBtn = widget.NewButton("Export CSV", u.onExportCSV)
+	u.convertBtn = widget.NewButton("Just convert to .cov", u.onJustConvert)
 	u.startBtn = widget.NewButton("Start", u.onStartOrStop)
 
 	u.table = u.buildTable()
@@ -157,7 +159,7 @@ func (u *UI) Root() fyne.CanvasObject {
 	moreInfo := widget.NewHyperlink("[more info]", fork)
 
 	top := container.NewVBox(
-		container.NewHBox(u.folderBtn, u.refreshBtn, u.settingsBtn, u.csvBtn),
+		container.NewHBox(u.folderBtn, u.refreshBtn, u.settingsBtn, u.csvBtn, u.convertBtn),
 		u.folderLabel,
 		container.NewHBox(u.overwrite, u.renameCheck, u.covCheck, moreInfo, u.startBtn),
 		widget.NewSeparator(),
@@ -382,6 +384,103 @@ func (u *UI) pickFolderFyne() {
 	}, u.win)
 }
 
+// onJustConvert picks a folder of images (.png/.jpg/.bmp) and converts each one
+// straight to a .cov next to it — no CRC32, no DAT, no boxart download. This is
+// the quick path for art you already have on disk.
+func (u *UI) onJustConvert() {
+	start := u.folder // captured on the UI goroutine; used as the dialog's start dir
+	go func() {
+		opts := []zenity.Option{zenity.Directory(), zenity.Title("Select folder with images (PNG/JPG/BMP)")}
+		if start != "" {
+			opts = append(opts, zenity.Filename(start))
+		}
+		path, err := zenity.SelectFile(opts...) // OS-native folder picker
+		if err != nil {
+			if errors.Is(err, zenity.ErrCanceled) {
+				return // user cancelled
+			}
+			fyne.Do(u.justConvertFyne) // native dialog unavailable: fall back to Fyne's
+			return
+		}
+		fyne.Do(func() { u.runConvert(path) })
+	}()
+}
+
+// justConvertFyne is the in-app folder picker for the convert flow, used when the
+// OS-native dialog is unavailable.
+func (u *UI) justConvertFyne() {
+	dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
+		if err != nil || lu == nil {
+			return
+		}
+		u.runConvert(lu.Path())
+	}, u.win)
+}
+
+// runConvert turns every supported image under folder into a .cov next to it
+// (e.g. cover.png -> cover.cov), honoring the "Overwrite existing" checkbox.
+// Progress streams to the status bar; the table stays empty since there is no
+// ROM/DAT context here.
+func (u *UI) runConvert(folder string) {
+	imgs, err := scan.FindImages(folder)
+	if err != nil {
+		dialog.ShowError(err, u.win)
+		return
+	}
+	if len(imgs) == 0 {
+		dialog.ShowInformation("Nothing found", "No .png/.jpg/.bmp images in the selected folder.", u.win)
+		return
+	}
+
+	u.rows = u.rows[:0]
+	u.table.Refresh()
+	u.summary.SetText("")
+	u.progress.SetValue(0)
+	u.progress.Max = float64(len(imgs))
+	u.previewKey = ""
+	u.clearPreview("Select a ROM to preview its cover")
+	u.setRunning(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	u.cancel = cancel
+	overwrite := u.overwrite.Checked
+	covOpts := cov.DefaultOptions()
+	total := len(imgs)
+
+	go func() {
+		var ok, skip, errc int
+	Loop:
+		for i, img := range imgs {
+			select {
+			case <-ctx.Done():
+				break Loop
+			default:
+			}
+			covPath := pipeline.CovPath(img) // <name>.<ext> -> <name>.cov
+			if _, serr := os.Stat(covPath); serr == nil && !overwrite {
+				skip++
+			} else if cerr := cov.ConvertFile(img, covPath, covOpts); cerr != nil {
+				errc++
+			} else {
+				ok++
+			}
+			// snapshot the running counts for the async UI update
+			idx, nOK, nSkip, nErr := i+1, ok, skip, errc
+			fyne.Do(func() {
+				u.progress.SetValue(float64(idx))
+				u.status.SetText(fmt.Sprintf("%d / %d", idx, total))
+				u.summary.SetText(fmt.Sprintf("Converted: %d   |   Skipped: %d   |   Errors: %d", nOK, nSkip, nErr))
+			})
+		}
+		fyne.Do(func() {
+			u.setRunning(false)
+			u.status.SetText(fmt.Sprintf("Converted %d / %d to .cov — done", ok, total))
+			dialog.ShowInformation("Done",
+				fmt.Sprintf("Converted: %d\nSkipped (already exist): %d\nErrors: %d", ok, skip, errc), u.win)
+		})
+	}()
+}
+
 func (u *UI) onStartOrStop() {
 	if u.running {
 		if u.cancel != nil {
@@ -489,6 +588,7 @@ func (u *UI) setRunning(running bool) {
 		u.refreshBtn.Disable()
 		u.settingsBtn.Disable()
 		u.csvBtn.Disable()
+		u.convertBtn.Disable()
 		u.overwrite.Disable()
 		u.renameCheck.Disable()
 		u.covCheck.Disable()
@@ -498,6 +598,7 @@ func (u *UI) setRunning(running bool) {
 		u.refreshBtn.Enable()
 		u.settingsBtn.Enable()
 		u.csvBtn.Enable()
+		u.convertBtn.Enable()
 		u.overwrite.Enable()
 		u.renameCheck.Enable()
 		u.covCheck.Enable()

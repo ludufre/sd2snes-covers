@@ -5,6 +5,15 @@ All notable changes to **sd2snes Covers** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-05-31
+
+### Added
+
+- **"Just convert to .cov"** button: pick a folder of images and convert each one
+  straight to a `.cov` next to it (e.g. `cover.png` → `cover.cov`) — no CRC32, no
+  DAT, no box-art download. For art you already have on disk. Accepts **PNG, JPG
+  and BMP**, scans subfolders, and honors **Overwrite existing**.
+
 ## [1.1.0] — 2026-05-30
 
 ### ⚠️ Breaking
@@ -67,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   libretro box art, and convert it to `.cov`. Optional rename to the No-Intro name
   and CSV export. Single binary for Windows, macOS and Linux (Go + Fyne).
 
+[1.2.0]: https://github.com/ludufre/sd2snes-covers/releases/tag/v1.2.0
 [1.1.0]: https://github.com/ludufre/sd2snes-covers/releases/tag/v1.1.0
 [1.0.1]: https://github.com/ludufre/sd2snes-covers/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ludufre/sd2snes-covers/releases/tag/v1.0.0

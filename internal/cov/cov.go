@@ -22,6 +22,7 @@ import (
 	_ "image/jpeg" // decode support
 	_ "image/png"  // decode support
 
+	_ "golang.org/x/image/bmp" // decode support
 	xdraw "golang.org/x/image/draw"
 )
 

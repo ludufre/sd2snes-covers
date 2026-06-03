@@ -24,9 +24,11 @@ type Index map[string]string
 
 var crcRe = regexp.MustCompile(`(?i)\bcrc\s+([0-9a-f]+)`)
 
-// cachePath returns the on-disk location of the cached DAT, creating its parent
-// directory. It falls back to the OS temp dir when no user cache dir is set.
-func cachePath() (string, error) {
+// cachePath returns the on-disk location of the cached DAT for a system key,
+// creating its parent directory. Each system caches to its own "<key>.dat" so
+// SNES/Game Boy/Game Boy Color DATs don't clobber each other. It falls back to
+// the OS temp dir when no user cache dir is set.
+func cachePath(key string) (string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		dir = os.TempDir()
@@ -35,14 +37,18 @@ func cachePath() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "snes.dat"), nil
+	if key == "" {
+		key = "snes"
+	}
+	return filepath.Join(dir, key+".dat"), nil
 }
 
-// Load returns the CRC index, downloading and caching the DAT from datURL on
-// first use (an empty datURL uses DefaultURL). When forceRefresh is true the
+// Load returns the CRC index for a system, downloading and caching the DAT from
+// datURL on first use (an empty datURL uses DefaultURL). key names the on-disk
+// cache file so each system is cached separately. When forceRefresh is true the
 // cached file is re-downloaded.
-func Load(ctx context.Context, datURL string, forceRefresh bool) (Index, error) {
-	path, err := cachePath()
+func Load(ctx context.Context, key, datURL string, forceRefresh bool) (Index, error) {
+	path, err := cachePath(key)
 	if err != nil {
 		return nil, err
 	}

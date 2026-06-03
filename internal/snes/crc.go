@@ -45,6 +45,22 @@ func CRC32Headerless(path string) (crc uint32, hadCopierHeader bool, err error) 
 	return h.Sum32(), hadCopierHeader, nil
 }
 
+// CRC32Plain computes the CRC32 (IEEE polynomial) of the whole file, with no
+// header handling. Used for Game Boy / Game Boy Color ROMs, which never carry the
+// SNES 512-byte copier header. The file is streamed into the hash.
+func CRC32Plain(path string) (uint32, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	h := crc32.NewIEEE()
+	if _, err = io.Copy(h, f); err != nil {
+		return 0, err
+	}
+	return h.Sum32(), nil
+}
+
 // CRCHex formats a CRC32 as an 8-digit uppercase hex string, matching the way
 // checksums appear in the No-Intro DAT.
 func CRCHex(crc uint32) string {

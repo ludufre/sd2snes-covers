@@ -8,14 +8,20 @@ import (
 	"strings"
 )
 
-// romExts are the loose ROM file extensions handled by the app.
+// romExts are the loose ROM file extensions handled by the app. SNES (.sfc/.smc)
+// plus Game Boy family (.gb/.gbc/.sgb); the system is picked per extension (see
+// internal/system). .sgb files are Game Boy ROMs (the extension only signals SGB
+// enhancement to the sd2snes), so they resolve against the Game Boy DAT/boxart.
 var romExts = map[string]bool{
 	".sfc": true,
 	".smc": true,
+	".gb":  true,
+	".gbc": true,
+	".sgb": true,
 }
 
-// FindROMs walks root recursively and returns the sorted paths of all .sfc/.smc
-// files found. Unreadable directories are skipped rather than aborting the walk.
+// FindROMs walks root recursively and returns the sorted paths of all ROM files
+// found. Unreadable directories are skipped rather than aborting the walk.
 func FindROMs(root string) ([]string, error) {
 	var roms []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

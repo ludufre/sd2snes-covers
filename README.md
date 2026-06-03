@@ -25,7 +25,7 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 
 | Feature | Description |
 |---|---|
-| 🧩 **Generate `.cov`** ⭐ | Converts each cover into the firmware's `.cov` (OBJ-sprite cover) format, saved as `<rom>.cov` next to the ROM — **the main goal.** |
+| 🧩 **Generate `.cov`** ⭐ | Downloads and converts each cover into the firmware's `.cov` (OBJ-sprite cover) format, saved as `<rom>.cov` next to the ROM (SNES/SFC/GB/SGB) — **the main goal.** |
 | ⚡ **Just convert to `.cov`** | Have your own art already? Point it at a folder of images and convert each one straight to a `.cov` next to it (`cover.png` → `cover.cov`) — no CRC32, no DAT, no download. Accepts **PNG / JPG / BMP**. |
 | 🔎 **Recursive scan** | Finds every `.sfc` / `.smc` in a folder and its subfolders. |
 | 🧮 **Match by CRC32** | Identifies each game by its *headerless* CRC32 against the libretro No-Intro DAT (4256 games). |

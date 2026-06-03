@@ -27,18 +27,19 @@ import (
 	"github.com/ludufre/sd2snes-covers/internal/dat"
 	"github.com/ludufre/sd2snes-covers/internal/pipeline"
 	"github.com/ludufre/sd2snes-covers/internal/scan"
+	"github.com/ludufre/sd2snes-covers/internal/system"
 	"github.com/ludufre/sd2snes-covers/internal/thumbs"
 )
 
 var headers = [5]string{"ROM", "CRC32", "No-Intro Match", "Cover", ".cov"}
 
 // Version is shown in the status bar and the window title.
-const Version = "v1.2.0"
+const Version = "v1.3.0"
 
 // preference keys (persisted via Fyne preferences)
 const (
-	prefDatURL      = "dat_url"
-	prefBoxartBase  = "boxart_base"
+	prefDatURL      = "dat_url"       // SNES DAT URL (kept unsuffixed for backward compat)
+	prefBoxartBase  = "boxart_base"   // SNES boxart base (kept unsuffixed for backward compat)
 	prefLastFolder  = "last_folder"   // remembered ROM folder (native-dialog start dir)
 	prefLastSaveDir = "last_save_dir" // remembered CSV export dir (native-dialog start dir)
 	forkURL         = "https://github.com/ludufre/sd2snes"
@@ -46,35 +47,38 @@ const (
 	updateTOMLURL   = "https://raw.githubusercontent.com/ludufre/sd2snes-covers/refs/heads/main/FyneApp.toml"
 )
 
-// legacyDatURLs / legacyBoxartBases hold PAST values of the matching defaults
-// (seeded with the current ones). A stored value equal to the current default OR
-// to any entry here is treated as "not customized", so changing a default below
-// propagates to existing installs while a genuine custom URL is preserved.
-//
-// HOW TO CHANGE A DEFAULT: edit dat.DefaultURL / thumbs.DefaultBoxartBase, then
-// make sure the value you are replacing is still listed here (the current literal
-// already is, so the next change migrates automatically; for later changes append
-// the old value).
-var (
-	legacyDatURLs = []string{
-		"https://raw.githubusercontent.com/libretro/libretro-database/refs/heads/master/metadat/no-intro/Nintendo%20-%20Super%20Nintendo%20Entertainment%20System.dat",
+// datPrefKey / boxPrefKey return the preference keys for a system's DAT URL and
+// boxart base. SNES keeps the original unsuffixed keys so values customized by
+// existing installs are preserved; every other system is suffixed with its key
+// (e.g. "dat_url_gb"). The default-migration rules live with each system in
+// internal/system (System.LegacyDat / System.LegacyBox).
+func datPrefKey(sysKey string) string {
+	if sysKey == system.KeySNES {
+		return prefDatURL
 	}
-	legacyBoxartBases = []string{
-		"https://thumbnails.libretro.com/Nintendo%20-%20Super%20Nintendo%20Entertainment%20System/Named_Boxarts/",
+	return prefDatURL + "_" + sysKey
+}
+
+func boxPrefKey(sysKey string) string {
+	if sysKey == system.KeySNES {
+		return prefBoxartBase
 	}
-)
+	return prefBoxartBase + "_" + sysKey
+}
 
 // UI holds widget state. All widget access happens on the Fyne main goroutine;
 // background work communicates back exclusively through fyne.Do.
 type UI struct {
 	win fyne.Window
 
-	folder string
-	index  dat.Index
-	rows   []pipeline.RowResult
+	folder   string
+	index    dat.Index            // SNES DAT (also gates "DAT loaded"); GB-family DATs below
+	lazyDats map[string]dat.Index // GB/GBC/SGB DATs, loaded on demand (worker goroutine only)
+	rows     []pipeline.RowResult
 
-	datURL     string // configurable DAT URL
-	boxartBase string // configurable boxart repository base URL
+	datURL     map[string]string // system key -> configurable DAT URL
+	boxartBase map[string]string // system key -> configurable boxart repository base URL
+	datDirty   map[string]bool   // GB-family system keys whose DAT URL changed in Settings (force re-download)
 
 	running bool
 	cancel  context.CancelFunc
@@ -106,8 +110,14 @@ func New(w fyne.Window) *UI {
 	u := &UI{win: w}
 
 	prefs := fyne.CurrentApp().Preferences()
-	u.datURL = resolvePref(prefs, prefDatURL, dat.DefaultURL, legacyDatURLs)
-	u.boxartBase = resolvePref(prefs, prefBoxartBase, thumbs.DefaultBoxartBase, legacyBoxartBases)
+	u.datURL = map[string]string{}
+	u.boxartBase = map[string]string{}
+	u.lazyDats = map[string]dat.Index{}
+	u.datDirty = map[string]bool{}
+	for _, s := range system.Systems {
+		u.datURL[s.Key] = resolvePref(prefs, datPrefKey(s.Key), s.DefaultDat, s.LegacyDat)
+		u.boxartBase[s.Key] = resolvePref(prefs, boxPrefKey(s.Key), s.DefaultBox, s.LegacyBox)
+	}
 	u.folder = prefs.String(prefLastFolder) // remember the last ROM folder
 
 	u.folderLabel = widget.NewLabel("No folder selected")
@@ -260,7 +270,10 @@ func (u *UI) showPreview(r pipeline.RowResult) {
 		return
 	}
 	u.previewKey = r.Match
-	name, base := r.Match, u.boxartBase
+	name, base, sysKey := r.Match, r.BoxartBase, r.SysKey
+	if base == "" {
+		base = thumbs.DefaultBoxartBase
+	}
 	u.clearPreview("Loading cover…")
 	go func() {
 		cacheDir, err := pipeline.BoxartCacheDir()
@@ -272,7 +285,7 @@ func (u *UI) showPreview(r pipeline.RowResult) {
 			})
 			return
 		}
-		path := filepath.Join(cacheDir, thumbs.Sanitize(name)+".png")
+		path := filepath.Join(cacheDir, sysKey+"_"+thumbs.Sanitize(name)+".png")
 		if fi, serr := os.Stat(path); serr != nil || fi.Size() == 0 {
 			client := thumbs.NewClient()
 			_, _ = thumbs.Download(context.Background(), client, base, name, path, false)
@@ -508,7 +521,7 @@ func (u *UI) onStart() {
 		return
 	}
 	if len(roms) == 0 {
-		dialog.ShowInformation("Nothing found", "No .sfc/.smc ROMs in the selected folder.", u.win)
+		dialog.ShowInformation("Nothing found", "No ROMs (.sfc/.smc/.gb/.gbc/.sgb) in the selected folder.", u.win)
 		return
 	}
 
@@ -523,16 +536,80 @@ func (u *UI) onStart() {
 	ctx, cancel := context.WithCancel(context.Background())
 	u.cancel = cancel
 	opts := pipeline.Options{
-		Overwrite:  u.overwrite.Checked,
-		Rename:     u.renameCheck.Checked,
-		MakeCov:    u.covCheck.Checked,
-		CovOpts:    cov.DefaultOptions(),
-		BoxartBase: u.boxartBase,
+		Overwrite: u.overwrite.Checked,
+		Rename:    u.renameCheck.Checked,
+		MakeCov:   u.covCheck.Checked,
+		CovOpts:   cov.DefaultOptions(),
 	}
 
+	needed := neededKeys(roms)
 	out := make(chan pipeline.Progress)
-	go pipeline.Run(ctx, roms, u.index, opts, out)
+	go func() {
+		cat, err := u.buildCatalog(ctx, needed)
+		if err != nil {
+			fyne.Do(func() {
+				dialog.ShowError(err, u.win)
+				u.status.SetText("Error loading DAT")
+			})
+			close(out) // let consume() finish and reset the UI
+			return
+		}
+		pipeline.Run(ctx, roms, cat, opts, out)
+	}()
 	go u.consume(out)
+}
+
+// neededKeys returns the set of system keys required to cover all of roms,
+// expanding fallbacks (e.g. a .gb ROM needs both the Game Boy and Game Boy Color
+// DATs so the GBC fallback can match).
+func neededKeys(roms []string) map[string]bool {
+	m := map[string]bool{}
+	for _, r := range roms {
+		keys, _ := system.ForExt(filepath.Ext(r))
+		for _, k := range keys {
+			m[k] = true
+		}
+	}
+	return m
+}
+
+// buildCatalog loads the DAT index and boxart base for every needed system, all
+// from the (possibly customized) Settings URLs. SNES reuses the index already
+// loaded at startup; the GB-family systems (Game Boy / Game Boy Color / Super
+// Game Boy) are loaded and cached on first use, force-re-downloading any whose
+// DAT URL was changed in Settings (datDirty). Loading happens off the main
+// goroutine (called from onStart's worker) and is never concurrent with itself
+// or with Settings edits (the Start/Settings buttons are mutually disabled while
+// running), so the lazy maps need no extra locking. Status updates go via fyne.Do.
+func (u *UI) buildCatalog(ctx context.Context, needed map[string]bool) (*pipeline.Catalog, error) {
+	cat := &pipeline.Catalog{
+		Index:  map[string]dat.Index{},
+		Boxart: map[string]string{},
+	}
+	if needed[system.KeySNES] && u.index != nil {
+		cat.Index[system.KeySNES] = u.index
+		cat.Boxart[system.KeySNES] = u.boxartBase[system.KeySNES]
+	}
+	for _, s := range system.Systems {
+		if s.Key == system.KeySNES || !needed[s.Key] {
+			continue // SNES is handled above; skip systems not present in this run
+		}
+		idx := u.lazyDats[s.Key]
+		if idx == nil || u.datDirty[s.Key] {
+			label := s.Name
+			fyne.Do(func() { u.status.SetText("Loading " + label + " DAT...") })
+			loaded, err := dat.Load(ctx, s.Key, u.datURL[s.Key], u.datDirty[s.Key])
+			if err != nil {
+				return nil, fmt.Errorf("%s DAT: %w", label, err)
+			}
+			idx = loaded
+			u.lazyDats[s.Key] = loaded
+			delete(u.datDirty, s.Key)
+		}
+		cat.Index[s.Key] = idx
+		cat.Boxart[s.Key] = u.boxartBase[s.Key]
+	}
+	return cat, nil
 }
 
 // consume drains progress events and applies UI updates on the main goroutine.
@@ -560,9 +637,9 @@ func (u *UI) loadDAT(force bool, then func()) {
 	u.refreshBtn.Disable()
 	u.startBtn.Disable()
 	u.status.SetText("Loading DAT...")
-	datURL := u.datURL
+	datURL := u.datURL[system.KeySNES]
 	go func() {
-		idx, err := dat.Load(context.Background(), datURL, force)
+		idx, err := dat.Load(context.Background(), system.KeySNES, datURL, force)
 		fyne.Do(func() {
 			u.refreshBtn.Enable()
 			u.startBtn.Enable()
@@ -606,17 +683,43 @@ func (u *UI) setRunning(running bool) {
 	}
 }
 
-// onSettings opens a dialog to edit the DAT URL and the boxart repository URL,
-// persisting them via Fyne preferences. Changing the DAT URL reloads the DAT.
+// onSettings opens a dialog to edit, per system, the No-Intro DAT URL and the
+// libretro boxart repository, persisting them via Fyne preferences. Each system
+// (Super Nintendo, Game Boy, Game Boy Color, Super Game Boy) gets its own
+// collapsible section. Changing a system's DAT URL forces that DAT to be
+// re-fetched: SNES reloads immediately; the GB-family DATs are re-downloaded the
+// next time a matching ROM is scanned (see buildCatalog / datDirty).
 func (u *UI) onSettings() {
-	datEntry := widget.NewEntry()
-	datEntry.SetText(u.datURL)
-	covEntry := widget.NewEntry()
-	covEntry.SetText(u.boxartBase)
+	prefs := fyne.CurrentApp().Preferences()
+
+	// One accordion section per system, each with its DAT URL and cover entries.
+	type sysRow struct {
+		sys system.System
+		dat *widget.Entry
+		box *widget.Entry
+	}
+	var rows []sysRow
+	acc := widget.NewAccordion()
+	acc.MultiOpen = true // let several systems stay expanded at once
+	for _, s := range system.Systems {
+		datEntry := widget.NewEntry()
+		datEntry.SetText(u.datURL[s.Key])
+		boxEntry := widget.NewEntry()
+		boxEntry.SetText(u.boxartBase[s.Key])
+		form := widget.NewForm(
+			widget.NewFormItem("DAT URL (No-Intro)", datEntry),
+			widget.NewFormItem("Cover repository", boxEntry),
+		)
+		acc.Append(widget.NewAccordionItem(s.Label(), form))
+		rows = append(rows, sysRow{s, datEntry, boxEntry})
+	}
+	acc.Open(0) // expand Super Nintendo by default
 
 	reset := widget.NewButton("Restore defaults", func() {
-		datEntry.SetText(dat.DefaultURL)
-		covEntry.SetText(thumbs.DefaultBoxartBase)
+		for _, r := range rows {
+			r.dat.SetText(r.sys.DefaultDat)
+			r.box.SetText(r.sys.DefaultBox)
+		}
 	})
 
 	clearCache := widget.NewButton("Clear cover cache", func() {
@@ -629,37 +732,45 @@ func (u *UI) onSettings() {
 			fmt.Sprintf("Removed %d cached cover(s), freed %s.", n, humanBytes(freed)), u.win)
 	})
 
-	items := []*widget.FormItem{
-		widget.NewFormItem("DAT URL (No-Intro)", datEntry),
-		widget.NewFormItem("Cover repository", covEntry),
-		widget.NewFormItem("Downloaded covers", clearCache),
-		widget.NewFormItem("", reset),
-	}
+	content := container.NewVBox(
+		acc,
+		widget.NewSeparator(),
+		container.NewBorder(nil, nil, widget.NewLabel("Downloaded covers"), nil, clearCache),
+		reset,
+	)
 
-	d := dialog.NewForm("Settings", "Save", "Cancel", items, func(ok bool) {
+	d := dialog.NewCustomConfirm("Settings", "Save", "Cancel", container.NewVScroll(content), func(ok bool) {
 		if !ok {
 			return
 		}
-		newDat := strings.TrimSpace(datEntry.Text)
-		newCov := strings.TrimSpace(covEntry.Text)
-		if newDat == "" {
-			newDat = dat.DefaultURL
+		snesChanged := false
+		for _, r := range rows {
+			newDat := strings.TrimSpace(r.dat.Text)
+			newBox := strings.TrimSpace(r.box.Text)
+			if newDat == "" {
+				newDat = r.sys.DefaultDat
+			}
+			if newBox == "" {
+				newBox = r.sys.DefaultBox
+			}
+			if newDat != u.datURL[r.sys.Key] {
+				if r.sys.Key == system.KeySNES {
+					snesChanged = true // SNES is eager: reload below
+				} else {
+					u.datDirty[r.sys.Key] = true  // GB-family: force re-download on next use
+					delete(u.lazyDats, r.sys.Key) // drop the stale in-memory index
+				}
+			}
+			u.datURL[r.sys.Key] = newDat
+			u.boxartBase[r.sys.Key] = newBox
+			setPrefOrDefault(prefs, datPrefKey(r.sys.Key), newDat, r.sys.DefaultDat)
+			setPrefOrDefault(prefs, boxPrefKey(r.sys.Key), newBox, r.sys.DefaultBox)
 		}
-		if newCov == "" {
-			newCov = thumbs.DefaultBoxartBase
-		}
-		datChanged := newDat != u.datURL
-		u.datURL, u.boxartBase = newDat, newCov
-
-		prefs := fyne.CurrentApp().Preferences()
-		setPrefOrDefault(prefs, prefDatURL, newDat, dat.DefaultURL)
-		setPrefOrDefault(prefs, prefBoxartBase, newCov, thumbs.DefaultBoxartBase)
-
-		if datChanged {
-			u.loadDAT(true, nil) // re-fetch with the new DAT URL
+		if snesChanged {
+			u.loadDAT(true, nil) // re-fetch SNES with the new DAT URL
 		}
 	}, u.win)
-	d.Resize(fyne.NewSize(640, 220))
+	d.Resize(fyne.NewSize(700, 520))
 	d.Show()
 }
 

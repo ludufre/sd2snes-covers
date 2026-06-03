@@ -16,19 +16,26 @@ import (
 	"github.com/ludufre/sd2snes-covers/internal/cov"
 	"github.com/ludufre/sd2snes-covers/internal/dat"
 	"github.com/ludufre/sd2snes-covers/internal/snes"
+	"github.com/ludufre/sd2snes-covers/internal/system"
 	"github.com/ludufre/sd2snes-covers/internal/thumbs"
 )
 
 const defaultWorkers = 6
 
+// Catalog holds the per-system DAT index and boxart base, keyed by system key
+// (see internal/system). process() picks the system(s) by ROM extension.
+type Catalog struct {
+	Index  map[string]dat.Index // system key -> CRC32 -> No-Intro name
+	Boxart map[string]string    // system key -> libretro boxart base URL
+}
+
 // Options configures a pipeline run.
 type Options struct {
-	Overwrite  bool
-	Workers    int
-	Rename     bool        // rename matched ROMs to their No-Intro name
-	MakeCov    bool        // generate a .cov cover next to each downloaded boxart
-	CovOpts    cov.Options // .cov parameters (used when MakeCov)
-	BoxartBase string      // boxart repository base URL ("" = default)
+	Overwrite bool
+	Workers   int
+	Rename    bool        // rename matched ROMs to their No-Intro name
+	MakeCov   bool        // generate a .cov cover next to each downloaded boxart
+	CovOpts   cov.Options // .cov parameters (used when MakeCov)
 }
 
 // CovStatus is the outcome of .cov generation for a ROM.
@@ -56,15 +63,17 @@ func (c CovStatus) String() string {
 
 // RowResult is the outcome for a single ROM.
 type RowResult struct {
-	ROMPath string
-	ROMName string // original basename at scan time
-	CRC     string
-	Match   string // No-Intro game name, or "" when not found in the DAT
-	URL     string // boxart URL for the match ("" when there is no match)
-	Cover   thumbs.Status
-	NewName string // basename after rename, or "" when not renamed
-	Cov     CovStatus
-	Err     error
+	ROMPath    string
+	ROMName    string // original basename at scan time
+	CRC        string
+	Match      string // No-Intro game name, or "" when not found in the DAT
+	URL        string // boxart URL for the match ("" when there is no match)
+	BoxartBase string // boxart base of the system the ROM matched (for the preview)
+	SysKey     string // system key the ROM matched (cache-key prefix for the preview)
+	Cover      thumbs.Status
+	NewName    string // basename after rename, or "" when not renamed
+	Cov        CovStatus
+	Err        error
 }
 
 // Progress carries one completed ROM and overall counters.
@@ -75,8 +84,9 @@ type Progress struct {
 }
 
 // Run processes roms concurrently, sending one Progress per ROM on out and
-// closing out when finished. It honors ctx cancellation.
-func Run(ctx context.Context, roms []string, index dat.Index, opts Options, out chan<- Progress) {
+// closing out when finished. It honors ctx cancellation. cat supplies the
+// per-system DAT index and boxart base; the system is chosen by ROM extension.
+func Run(ctx context.Context, roms []string, cat *Catalog, opts Options, out chan<- Progress) {
 	defer close(out)
 
 	workers := opts.Workers
@@ -103,7 +113,7 @@ func Run(ctx context.Context, roms []string, index dat.Index, opts Options, out 
 		go func() {
 			defer wg.Done()
 			for romPath := range jobs {
-				results <- process(ctx, client, index, opts, cacheDir, romPath)
+				results <- process(ctx, client, cat, opts, cacheDir, romPath)
 			}
 		}()
 	}
@@ -131,10 +141,23 @@ func Run(ctx context.Context, roms []string, index dat.Index, opts Options, out 
 	}
 }
 
-func process(ctx context.Context, client *http.Client, index dat.Index, opts Options, cacheDir, romPath string) RowResult {
+func process(ctx context.Context, client *http.Client, cat *Catalog, opts Options, cacheDir, romPath string) RowResult {
 	row := RowResult{ROMPath: romPath, ROMName: filepath.Base(romPath)}
 
-	crc, _, err := snes.CRC32Headerless(romPath)
+	keys, stripHeader := system.ForExt(filepath.Ext(romPath))
+	if len(keys) == 0 {
+		row.Cover = thumbs.StatusNoMatch // unknown extension
+		return row
+	}
+
+	// CRC32: SNES skips the 512-byte copier header; Game Boy hashes the whole file.
+	var crc uint32
+	var err error
+	if stripHeader {
+		crc, _, err = snes.CRC32Headerless(romPath)
+	} else {
+		crc, err = snes.CRC32Plain(romPath)
+	}
 	if err != nil {
 		row.Err = err
 		row.Cover = thumbs.StatusError
@@ -142,16 +165,26 @@ func process(ctx context.Context, client *http.Client, index dat.Index, opts Opt
 	}
 	row.CRC = snes.CRCHex(crc)
 
-	name, ok := index[row.CRC]
-	if !ok {
+	// Try each system for this extension in order (e.g. .gb -> Game Boy, then GBC).
+	var name, base, sysKey string
+	for _, k := range keys {
+		if idx := cat.Index[k]; idx != nil {
+			if n, ok := idx[row.CRC]; ok {
+				name, base, sysKey = n, cat.Boxart[k], k
+				break
+			}
+		}
+	}
+	if name == "" {
 		row.Cover = thumbs.StatusNoMatch
 		return row
 	}
 	row.Match = name
-	base := opts.BoxartBase
 	if base == "" {
 		base = thumbs.DefaultBoxartBase
 	}
+	row.BoxartBase = base
+	row.SysKey = sysKey
 	row.URL = thumbs.BoxartURLFrom(base, name) // recorded in the CSV (the URL that 404s on "Not found")
 
 	// Optional rename to the No-Intro name (keep the original extension).
@@ -189,12 +222,14 @@ func process(ctx context.Context, client *http.Client, index dat.Index, opts Opt
 	// same game is fetched only once across runs and across duplicate ROMs.
 	cachePNG := finalPNG // fallback target when there is no cache dir
 	if cacheDir != "" {
-		cachePNG = filepath.Join(cacheDir, thumbs.Sanitize(name)+".png")
+		// prefix with the system key so same-named games on different systems
+		// (e.g. a SNES and a Game Boy game) don't share one cached PNG.
+		cachePNG = filepath.Join(cacheDir, sysKey+"_"+thumbs.Sanitize(name)+".png")
 	}
 	if cacheDir != "" && fileExists(cachePNG) {
 		row.Cover = thumbs.StatusOK // cache hit
 	} else {
-		status, derr := thumbs.Download(ctx, client, opts.BoxartBase, name, cachePNG, true)
+		status, derr := thumbs.Download(ctx, client, base, name, cachePNG, true)
 		row.Cover = status
 		if derr != nil && row.Err == nil {
 			row.Err = derr

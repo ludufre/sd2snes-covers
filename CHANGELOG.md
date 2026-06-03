@@ -5,6 +5,12 @@ All notable changes to **sd2snes Covers** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-06-03
+
+### Added
+
+- **"Game Boy & Super Game Boy covers"** the app now scan for GB/SGB ROMs and download their box art as well, converting it to `.cov` .
+
 ## [1.2.0] — 2026-05-31
 
 ### Added

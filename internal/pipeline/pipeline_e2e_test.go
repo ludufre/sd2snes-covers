@@ -10,11 +10,20 @@ import (
 	"github.com/ludufre/sd2snes-covers/internal/cov"
 	"github.com/ludufre/sd2snes-covers/internal/dat"
 	"github.com/ludufre/sd2snes-covers/internal/snes"
+	"github.com/ludufre/sd2snes-covers/internal/system"
 	"github.com/ludufre/sd2snes-covers/internal/thumbs"
 )
 
 // pngMagic is the 8-byte PNG file signature.
 var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
+// snesCat wraps a single SNES index in a Catalog for the .sfc/.smc test ROMs.
+func snesCat(index dat.Index) *Catalog {
+	return &Catalog{
+		Index:  map[string]dat.Index{system.KeySNES: index},
+		Boxart: map[string]string{system.KeySNES: thumbs.DefaultBoxartBase},
+	}
+}
 
 // TestRunE2E exercises the full pipeline against the live libretro server:
 // scan -> headerless CRC -> DAT lookup -> boxart download -> save next to ROM.
@@ -47,7 +56,7 @@ func TestRunE2E(t *testing.T) {
 	index := dat.Index{snes.CRCHex(crc): "Super Mario World (USA)"}
 
 	out := make(chan Progress)
-	go Run(context.Background(), []string{matchROM, noMatchROM}, index, Options{Overwrite: true}, out)
+	go Run(context.Background(), []string{matchROM, noMatchROM}, snesCat(index), Options{Overwrite: true}, out)
 
 	rows := map[string]RowResult{}
 	for p := range out {
@@ -84,6 +93,57 @@ func TestRunE2E(t *testing.T) {
 	}
 }
 
+// TestRunE2EGameBoy exercises the Game Boy path: a .gb ROM uses the plain
+// (non-headerless) CRC32 and resolves against the Game Boy catalog/boxart. Uses a
+// synthetic index mapping the file's CRC to a real Game Boy game so the boxart
+// download hits the live Game Boy thumbnail repository.
+func TestRunE2EGameBoy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network test; skipped in -short mode")
+	}
+	dir := t.TempDir()
+	t.Setenv("SD2SNES_COVERS_CACHE", t.TempDir())
+
+	rom := filepath.Join(dir, "mario land.gb")
+	if err := os.WriteFile(rom, []byte("arbitrary game boy rom bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	crc, err := snes.CRC32Plain(rom) // Game Boy: no copier header
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := &Catalog{
+		Index: map[string]dat.Index{
+			system.KeyGB: {snes.CRCHex(crc): "Super Mario Land (World)"},
+		},
+		Boxart: map[string]string{system.KeyGB: system.GBBoxart},
+	}
+
+	out := make(chan Progress)
+	go Run(context.Background(), []string{rom}, cat, Options{Overwrite: true}, out)
+	var row RowResult
+	for p := range out {
+		row = p.Row
+	}
+
+	if row.Match != "Super Mario Land (World)" {
+		t.Errorf("Match = %q, want %q", row.Match, "Super Mario Land (World)")
+	}
+	if row.SysKey != system.KeyGB {
+		t.Errorf("SysKey = %q, want %q", row.SysKey, system.KeyGB)
+	}
+	if row.Cover != thumbs.StatusOK {
+		t.Errorf("Cover = %v, want OK (err: %v)", row.Cover, row.Err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "mario land.png"))
+	if err != nil {
+		t.Fatalf("cover not saved next to ROM: %v", err)
+	}
+	if len(data) == 0 || !bytes.HasPrefix(data, pngMagic) {
+		t.Errorf("saved cover is not a valid PNG (size=%d)", len(data))
+	}
+}
+
 // TestRunE2ERenameAndCov exercises rename-to-No-Intro + .cov generation against
 // the live server: an arbitrarily-named ROM is renamed and a .cov produced under
 // the No-Intro basename, while the downloaded PNG stays in a temp dir (not kept
@@ -105,7 +165,7 @@ func TestRunE2ERenameAndCov(t *testing.T) {
 	index := dat.Index{snes.CRCHex(crc): "Super Mario World (USA)"}
 
 	out := make(chan Progress)
-	go Run(context.Background(), []string{rom}, index, Options{
+	go Run(context.Background(), []string{rom}, snesCat(index), Options{
 		Overwrite: true, Rename: true, MakeCov: true, CovOpts: cov.DefaultOptions(),
 	}, out)
 	var row RowResult

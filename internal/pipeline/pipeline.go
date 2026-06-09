@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ludufre/sd2snes-covers/internal/cheats"
 	"github.com/ludufre/sd2snes-covers/internal/cov"
 	"github.com/ludufre/sd2snes-covers/internal/dat"
 	"github.com/ludufre/sd2snes-covers/internal/snes"
@@ -31,11 +32,13 @@ type Catalog struct {
 
 // Options configures a pipeline run.
 type Options struct {
-	Overwrite bool
-	Workers   int
-	Rename    bool        // rename matched ROMs to their No-Intro name
-	MakeCov   bool        // generate a .cov cover next to each downloaded boxart
-	CovOpts   cov.Options // .cov parameters (used when MakeCov)
+	Overwrite  bool
+	Workers    int
+	Rename     bool        // rename matched ROMs to their No-Intro name
+	MakeCov    bool        // generate a .cov cover next to each downloaded boxart
+	CovOpts    cov.Options // .cov parameters (used when MakeCov)
+	MakeCheats bool        // download cheat .yml files into CheatsDir
+	CheatsDir  string      // root cheats output folder (<chosen folder>/cheats); empty disables
 }
 
 // CovStatus is the outcome of .cov generation for a ROM.
@@ -73,6 +76,7 @@ type RowResult struct {
 	Cover      thumbs.Status
 	NewName    string // basename after rename, or "" when not renamed
 	Cov        CovStatus
+	Cheat      cheats.Status // cheat .yml download outcome (StatusNone when not requested)
 	Err        error
 }
 
@@ -81,6 +85,37 @@ type Progress struct {
 	Index int // 1-based number of completed items
 	Total int
 	Row   RowResult
+}
+
+// cheatSink coordinates the flat cheats/ folder across workers. Cheats are named
+// after the ROM, so two different games with the same filename would clash; the
+// claim map records which CRC first claimed each name this run, letting later
+// workers detect a collision (different CRC) or a duplicate ROM (same CRC)
+// without a second network fetch.
+type cheatSink struct {
+	mu      sync.Mutex
+	claimed map[string]string // cheat filename (lower-case) -> CRC that claimed it
+}
+
+// tryClaim reserves key for crc. busy reports that the name was already taken;
+// sameGame reports whether the prior claim was the same CRC (a duplicate ROM
+// rather than a real collision).
+func (s *cheatSink) tryClaim(key, crc string) (busy, sameGame bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.claimed[key]; ok {
+		return true, c == crc
+	}
+	s.claimed[key] = crc
+	return false, false
+}
+
+// release frees a claimed name (used when the fetch turned up nothing, so a
+// same-named ROM that does have a cheat can use the name instead).
+func (s *cheatSink) release(key string) {
+	s.mu.Lock()
+	delete(s.claimed, key)
+	s.mu.Unlock()
 }
 
 // Run processes roms concurrently, sending one Progress per ROM on out and
@@ -106,6 +141,7 @@ func Run(ctx context.Context, roms []string, cat *Catalog, opts Options, out cha
 
 	jobs := make(chan string)
 	results := make(chan RowResult)
+	sink := &cheatSink{claimed: map[string]string{}}
 
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -113,7 +149,7 @@ func Run(ctx context.Context, roms []string, cat *Catalog, opts Options, out cha
 		go func() {
 			defer wg.Done()
 			for romPath := range jobs {
-				results <- process(ctx, client, cat, opts, cacheDir, romPath)
+				results <- process(ctx, client, cat, opts, cacheDir, sink, romPath)
 			}
 		}()
 	}
@@ -141,7 +177,7 @@ func Run(ctx context.Context, roms []string, cat *Catalog, opts Options, out cha
 	}
 }
 
-func process(ctx context.Context, client *http.Client, cat *Catalog, opts Options, cacheDir, romPath string) RowResult {
+func process(ctx context.Context, client *http.Client, cat *Catalog, opts Options, cacheDir string, sink *cheatSink, romPath string) RowResult {
 	row := RowResult{ROMPath: romPath, ROMName: filepath.Base(romPath)}
 
 	keys, stripHeader := system.ForExt(filepath.Ext(romPath))
@@ -165,6 +201,53 @@ func process(ctx context.Context, client *http.Client, cat *Catalog, opts Option
 	}
 	row.CRC = snes.CRCHex(crc)
 
+	// Cheats are keyed purely by the CRC32 — independent of the boxart DAT — and
+	// land in a flat cheats/ folder named after the ROM. finishCheat is a closure
+	// so it can be called with the ROM's final name (after an optional rename) on
+	// the matched path, or with the original name on the no-match path below.
+	// Claim-before-fetch: the in-run collision/duplicate check and the
+	// already-on-disk skip both happen before any network request, so re-runs
+	// don't re-download cheats that already exist (mirrors the boxart skip).
+	finishCheat := func(finalRom string) {
+		if !opts.MakeCheats || opts.CheatsDir == "" {
+			return
+		}
+		cheatName := fsSafeName(strings.TrimSuffix(filepath.Base(finalRom), filepath.Ext(finalRom))) + ".yml"
+		key := strings.ToLower(cheatName)
+
+		// Another ROM this run already owns this filename.
+		if busy, sameGame := sink.tryClaim(key, row.CRC); busy {
+			if sameGame {
+				row.Cheat = cheats.StatusSkip // duplicate ROM (same CRC)
+			} else {
+				row.Cheat = cheats.StatusCollision // different game, same filename — don't overwrite
+			}
+			return
+		}
+		dest := filepath.Join(opts.CheatsDir, cheatName)
+
+		// Overwrite off and the cheat already exists from a previous run: skip
+		// before fetching anything.
+		if !opts.Overwrite {
+			if fileExists(dest) {
+				row.Cheat = cheats.StatusSkip
+				return
+			}
+		}
+
+		data, st := cheats.Fetch(ctx, client, row.CRC)
+		if st != cheats.StatusOK {
+			sink.release(key) // free the name: a same-named ROM that has a cheat can use it
+			row.Cheat = st     // NotFound or Error
+			return
+		}
+		if err := writeFileAtomic(dest, data); err != nil {
+			row.Cheat = cheats.StatusError
+			return
+		}
+		row.Cheat = cheats.StatusOK
+	}
+
 	// Try each system for this extension in order (e.g. .gb -> Game Boy, then GBC).
 	var name, base, sysKey string
 	for _, k := range keys {
@@ -176,6 +259,7 @@ func process(ctx context.Context, client *http.Client, cat *Catalog, opts Option
 		}
 	}
 	if name == "" {
+		finishCheat(romPath) // no boxart match, but the ROM may still have a cheat
 		row.Cover = thumbs.StatusNoMatch
 		return row
 	}
@@ -197,6 +281,11 @@ func process(ctx context.Context, client *http.Client, cat *Catalog, opts Option
 			row.NewName = filepath.Base(newPath)
 		}
 	}
+
+	// Cheat by the ROM's final name. Done before the boxart skip below so the
+	// cheat is fetched even when the cover/.cov already exists (and vice versa:
+	// the cover download ignores the cheat state).
+	finishCheat(romPath)
 
 	finalPNG := CoverPath(romPath) // <rom>.png next to the ROM (written only when not making a .cov)
 	covPath := CovPath(romPath)    // <rom>.cov next to the ROM
@@ -266,6 +355,36 @@ func makeCov(pngPath, covPath string, opts Options) CovStatus {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// writeFileAtomic writes data to dest via a unique temp file + rename, creating
+// dest's parent directory on demand (this is what lazily creates the cheats/
+// folder on the first saved cheat). The atomic rename keeps a partial file from
+// ever being observed at dest.
+func writeFileAtomic(dest string, data []byte) error {
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".dl-*.yml")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // copyFile copies src to dst atomically (temp file + rename), leaving src in
@@ -430,7 +549,7 @@ func WriteCSV(w io.Writer, rows []RowResult) error {
 	}
 	cw := csv.NewWriter(w)
 	cw.UseCRLF = true
-	header := []string{"File", "CRC32", "No-Intro", "Cover", "Renamed to", "cov", "Boxart URL", "Error"}
+	header := []string{"File", "CRC32", "No-Intro", "Cover", "Renamed to", "cov", "Cheats", "Boxart URL", "Error"}
 	if err := cw.Write(header); err != nil {
 		return err
 	}
@@ -439,7 +558,7 @@ func WriteCSV(w io.Writer, rows []RowResult) error {
 		if r.Err != nil {
 			errMsg = r.Err.Error()
 		}
-		rec := []string{r.ROMName, r.CRC, r.Match, r.Cover.String(), r.NewName, r.Cov.String(), r.URL, errMsg}
+		rec := []string{r.ROMName, r.CRC, r.Match, r.Cover.String(), r.NewName, r.Cov.String(), r.Cheat.String(), r.URL, errMsg}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

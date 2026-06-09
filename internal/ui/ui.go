@@ -23,6 +23,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/ncruces/zenity"
 
+	"github.com/ludufre/sd2snes-covers/internal/cheats"
 	"github.com/ludufre/sd2snes-covers/internal/cov"
 	"github.com/ludufre/sd2snes-covers/internal/dat"
 	"github.com/ludufre/sd2snes-covers/internal/pipeline"
@@ -31,10 +32,10 @@ import (
 	"github.com/ludufre/sd2snes-covers/internal/thumbs"
 )
 
-var headers = [5]string{"ROM", "CRC32", "No-Intro Match", "Cover", ".cov"}
+var headers = [6]string{"ROM", "CRC32", "No-Intro Match", "Cover", ".cov", "Cheats"}
 
 // Version is shown in the status bar and the window title.
-const Version = "v1.3.0"
+const Version = "v1.4.0"
 
 // preference keys (persisted via Fyne preferences)
 const (
@@ -92,6 +93,7 @@ type UI struct {
 	overwrite   *widget.Check
 	renameCheck *widget.Check
 	covCheck    *widget.Check
+	cheatsCheck *widget.Check
 	folderLabel *widget.Label
 	progress    *widget.ProgressBar
 	status      *widget.Label
@@ -135,6 +137,8 @@ func New(w fyne.Window) *UI {
 	u.renameCheck = widget.NewCheck("Rename (No-Intro)", nil)
 	u.covCheck = widget.NewCheck("Generate covers (.cov)", nil)
 	u.covCheck.SetChecked(true) // .cov generation is the main goal — on by default
+	u.cheatsCheck = widget.NewCheck("Download cheats", nil)
+	u.cheatsCheck.SetChecked(true) // fetch cheats into <folder>/cheats by default
 
 	u.folderBtn = widget.NewButton("Select ROM folder...", u.onPickFolder)
 	u.refreshBtn = widget.NewButton("Refresh DAT", func() { u.loadDAT(true, nil) })
@@ -171,7 +175,7 @@ func (u *UI) Root() fyne.CanvasObject {
 	top := container.NewVBox(
 		container.NewHBox(u.folderBtn, u.refreshBtn, u.settingsBtn, u.csvBtn, u.convertBtn),
 		u.folderLabel,
-		container.NewHBox(u.overwrite, u.renameCheck, u.covCheck, moreInfo, u.startBtn),
+		container.NewHBox(u.overwrite, u.renameCheck, u.covCheck, u.cheatsCheck, moreInfo, u.startBtn),
 		widget.NewSeparator(),
 	)
 
@@ -239,6 +243,7 @@ func (u *UI) buildTable() *widget.Table {
 	t.SetColumnWidth(2, 320)
 	t.SetColumnWidth(3, 100)
 	t.SetColumnWidth(4, 80)
+	t.SetColumnWidth(5, 90)
 
 	// Selecting a cell copies its full text to the clipboard — handy since long
 	// values are visually truncated with an ellipsis (Fyne tables have no native
@@ -536,10 +541,12 @@ func (u *UI) onStart() {
 	ctx, cancel := context.WithCancel(context.Background())
 	u.cancel = cancel
 	opts := pipeline.Options{
-		Overwrite: u.overwrite.Checked,
-		Rename:    u.renameCheck.Checked,
-		MakeCov:   u.covCheck.Checked,
-		CovOpts:   cov.DefaultOptions(),
+		Overwrite:  u.overwrite.Checked,
+		Rename:     u.renameCheck.Checked,
+		MakeCov:    u.covCheck.Checked,
+		CovOpts:    cov.DefaultOptions(),
+		MakeCheats: u.cheatsCheck.Checked,
+		CheatsDir:  filepath.Join(u.folder, "cheats"),
 	}
 
 	needed := neededKeys(roms)
@@ -669,6 +676,7 @@ func (u *UI) setRunning(running bool) {
 		u.overwrite.Disable()
 		u.renameCheck.Disable()
 		u.covCheck.Disable()
+		u.cheatsCheck.Disable()
 	} else {
 		u.startBtn.SetText("Start")
 		u.folderBtn.Enable()
@@ -679,6 +687,7 @@ func (u *UI) setRunning(running bool) {
 		u.overwrite.Enable()
 		u.renameCheck.Enable()
 		u.covCheck.Enable()
+		u.cheatsCheck.Enable()
 		u.cancel = nil
 	}
 }
@@ -845,13 +854,16 @@ func writeCSVFile(path string, rows []pipeline.RowResult) error {
 }
 
 func (u *UI) updateSummary() {
-	var ok, notFound, skip, noMatch, errc, renamed, covOK int
+	var ok, notFound, skip, noMatch, errc, renamed, covOK, cheatsOK int
 	for _, r := range u.rows {
 		if r.NewName != "" {
 			renamed++
 		}
 		if r.Cov == pipeline.CovOK {
 			covOK++
+		}
+		if r.Cheat == cheats.StatusOK {
+			cheatsOK++
 		}
 		if r.Err != nil {
 			errc++
@@ -871,8 +883,8 @@ func (u *UI) updateSummary() {
 		}
 	}
 	u.summary.SetText(fmt.Sprintf(
-		"Cover OK: %d   |   Not found: %d   |   Skipped: %d   |   No match: %d   |   Renamed: %d   |   .cov: %d   |   Errors: %d",
-		ok, notFound, skip, noMatch, renamed, covOK, errc,
+		"Cover OK: %d   |   Not found: %d   |   Skipped: %d   |   No match: %d   |   Renamed: %d   |   .cov: %d   |   Cheats: %d   |   Errors: %d",
+		ok, notFound, skip, noMatch, renamed, covOK, cheatsOK, errc,
 	))
 }
 
@@ -899,6 +911,8 @@ func cellText(r pipeline.RowResult, col int) string {
 		return displayStatus(r)
 	case 4:
 		return r.Cov.String()
+	case 5:
+		return r.Cheat.String()
 	}
 	return ""
 }

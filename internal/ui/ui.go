@@ -138,7 +138,7 @@ func New(w fyne.Window) *UI {
 	u.covCheck = widget.NewCheck("Generate covers (.cov)", nil)
 	u.covCheck.SetChecked(true) // .cov generation is the main goal — on by default
 	u.cheatsCheck = widget.NewCheck("Download cheats", nil)
-	u.cheatsCheck.SetChecked(true) // fetch cheats into <folder>/cheats by default
+	u.cheatsCheck.SetChecked(true) // fetch cheats into <folder>/sd2snes/cheats by default
 
 	u.folderBtn = widget.NewButton("Select ROM folder...", u.onPickFolder)
 	u.refreshBtn = widget.NewButton("Refresh DAT", func() { u.loadDAT(true, nil) })
@@ -546,7 +546,7 @@ func (u *UI) onStart() {
 		MakeCov:    u.covCheck.Checked,
 		CovOpts:    cov.DefaultOptions(),
 		MakeCheats: u.cheatsCheck.Checked,
-		CheatsDir:  filepath.Join(u.folder, "cheats"),
+		CheatsDir:  filepath.Join(u.folder, "sd2snes", "cheats"),
 	}
 
 	needed := neededKeys(roms)

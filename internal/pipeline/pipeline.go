@@ -38,7 +38,7 @@ type Options struct {
 	MakeCov    bool        // generate a .cov cover next to each downloaded boxart
 	CovOpts    cov.Options // .cov parameters (used when MakeCov)
 	MakeCheats bool        // download cheat .yml files into CheatsDir
-	CheatsDir  string      // root cheats output folder (<chosen folder>/cheats); empty disables
+	CheatsDir  string      // root cheats output folder (<chosen folder>/sd2snes/cheats); empty disables
 }
 
 // CovStatus is the outcome of .cov generation for a ROM.

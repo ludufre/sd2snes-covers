@@ -30,7 +30,7 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 | 🔎 **Recursive scan** | Finds every `.sfc` / `.smc` / `.gb` / `.gbc` / `.sgb` in a folder and its subfolders. |
 | 🧮 **Match by CRC32** | Identifies each game by its *headerless* CRC32 against the libretro No-Intro DAT (4256 ROMs). |
 | 🖼️ **Box art download** | Fetches the official `.png` from `thumbnails.libretro.com` (the source image for the `.cov`), saved next to the ROM. |
-| 🎮 **Download cheats** | Fetches each game's cheat file by CRC32 from `sd2snes.ludufre.com/cheats/<CRC32>.yml` into a `cheats/` folder at the root of the chosen folder, named after the ROM (`<rom>.yml`). On a name clash between two different games it reports **Collision** and keeps the first file. |
+| 🎮 **Download cheats** | Fetches each game's cheat file by CRC32 from `sd2snes.ludufre.com/cheats/<CRC32>.yml` into a `sd2snes/cheats/` folder at the root of the chosen folder, named after the ROM (`<rom>.yml`). On a name clash between two different games it reports **Collision** and keeps the first file. |
 | ✏️ **Rename (No-Intro)** | Renames the ROM to its canonical No-Intro name (carrying the cover/`.cov` along). |
 | 📄 **Export CSV** | A spreadsheet with the result for each ROM. |
 | ⚙️ **Cross-platform** | Single binary per OS (Go + [Fyne](https://fyne.io)), no external runtime. |
@@ -40,7 +40,7 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 ## 🚀 Usage
 
 1. **Select ROM folder** — pick the folder (subfolders are scanned too).
-2. Toggle the options you want: **Overwrite existing**, **Rename (No-Intro)**, **Generate .cov** (on by default), **Download cheats** (on by default — saves `<rom>.yml` into a `cheats/` folder at the root of the chosen folder).
+2. Toggle the options you want: **Overwrite existing**, **Rename (No-Intro)**, **Generate .cov** (on by default), **Download cheats** (on by default — saves `<rom>.yml` into a `sd2snes/cheats/` folder at the root of the chosen folder).
 3. **Start** — watch the progress bar and the per-ROM status in the table.
 4. (Optional) **Export CSV** with the results — it includes each game's **boxart URL** (handy for the ones reported as *Not found*) and opens with the right columns in Excel/LibreOffice. Click any table cell to copy its full text to the clipboard.
 

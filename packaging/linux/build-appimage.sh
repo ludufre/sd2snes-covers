@@ -20,8 +20,15 @@ APPDIR=/tmp/AppDir
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin"
 cp /tmp/sd2snes-covers "$APPDIR/usr/bin/sd2snes-covers"
-cp Icon.png "$APPDIR/sd2snes-covers.png"
+
+# App icon: the 256px PNG as the top-level icon (name must match the .desktop
+# Icon= key) and .DirIcon, plus the full hicolor theme tree (all sizes) so the
+# icon resolves when the AppImage is extracted or integrated into a menu.
+# Regenerate these from packaging/icon-big.png with packaging/genicons/genicons.sh.
+cp packaging/linux/icons/hicolor/256x256/apps/sd2snes-covers.png "$APPDIR/sd2snes-covers.png"
 cp "$APPDIR/sd2snes-covers.png" "$APPDIR/.DirIcon"
+mkdir -p "$APPDIR/usr/share/icons"
+cp -r packaging/linux/icons/hicolor "$APPDIR/usr/share/icons/"
 cp packaging/linux/sd2snes-covers.desktop "$APPDIR/"
 cp packaging/linux/AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"

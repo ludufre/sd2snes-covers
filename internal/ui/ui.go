@@ -35,7 +35,7 @@ import (
 var headers = [6]string{"ROM", "CRC32", "No-Intro Match", "Cover", ".cov", "Cheats"}
 
 // Version is shown in the status bar and the window title.
-const Version = "v1.4.0"
+const Version = "v1.4.1"
 
 // preference keys (persisted via Fyne preferences)
 const (

@@ -149,8 +149,9 @@ internal/cheats/              Cheat (.yml) URL + download by CRC32
 internal/cov/                 .cov encoder/decoder
 internal/pipeline/            Worker pool, rename, .cov, CSV, progress
 internal/ui/                  Fyne interface
-packaging/linux/              AppImage build (script + AppRun + .desktop)
+packaging/linux/              AppImage build (script + AppRun + .desktop + hicolor icons)
 packaging/icons/              Per-platform icons (square/macOS .png, .ico, .icns)
+packaging/genicons/           Regenerate every icon from packaging/icon-big.png
 prepare.sh · build.sh         Environment setup and artifact builds
 ```
 

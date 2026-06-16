@@ -3,14 +3,19 @@
 package main
 
 import (
+	_ "embed"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 
 	"github.com/ludufre/sd2snes-covers/internal/ui"
 )
 
+var iconPNG []byte
+
 func main() {
 	a := app.NewWithID("com.ludufre.sd2snes-covers")
+	a.SetIcon(fyne.NewStaticResource("icon.png", iconPNG))
 	w := a.NewWindow("sd2snes Covers " + ui.Version)
 
 	u := ui.New(w)

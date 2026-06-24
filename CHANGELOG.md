@@ -5,6 +5,24 @@ All notable changes to **sd2snes Covers** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] — 2026-06-24
+
+### Deprecated
+
+- **sd2snes Covers is discontinued.** This is the final release; the app receives no further updates. A banner at the top of the window points to the new browser-based **[sd2snes+ Web Manager](https://sd2snes.ludufre.com/manager)**, which does everything this app did — and more — without installing anything: it downloads `.cov` covers, game info, and cheats automatically, identifies every game by CRC32, previews the in-game screen with sound, organizes the SD card, and updates the sd2snes+ firmware, all pulling from the community GameDB while your files never leave your computer.
+
+## [1.4.1] — 2026-06-24
+
+### Fixed
+
+- Cheats download: the app now create the correct folder structure
+
+## [1.4.0] — 2026-06-09
+
+### Added
+
+- This version add automatic cheat download
+
 ## [1.3.0] — 2026-06-03
 
 ### Added

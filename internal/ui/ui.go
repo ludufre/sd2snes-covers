@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/png" // register the PNG decoder for the .cov preview round-trip
 	"io"
 	"net/http"
@@ -35,7 +36,7 @@ import (
 var headers = [6]string{"ROM", "CRC32", "No-Intro Match", "Cover", ".cov", "Cheats"}
 
 // Version is shown in the status bar and the window title.
-const Version = "v1.4.1"
+const Version = "v1.4.2"
 
 // preference keys (persisted via Fyne preferences)
 const (
@@ -46,6 +47,7 @@ const (
 	forkURL         = "https://github.com/ludufre/sd2snes"
 	releasesURL     = "https://github.com/ludufre/sd2snes-covers/releases"
 	updateTOMLURL   = "https://raw.githubusercontent.com/ludufre/sd2snes-covers/refs/heads/main/FyneApp.toml"
+	managerURL      = "https://sd2snes.ludufre.com/manager" // browser-based successor to this app
 )
 
 // datPrefKey / boxPrefKey return the preference keys for a system's DAT URL and
@@ -173,6 +175,7 @@ func (u *UI) Root() fyne.CanvasObject {
 	moreInfo := widget.NewHyperlink("[more info]", fork)
 
 	top := container.NewVBox(
+		u.banner(),
 		container.NewHBox(u.folderBtn, u.refreshBtn, u.settingsBtn, u.csvBtn, u.convertBtn),
 		u.folderLabel,
 		container.NewHBox(u.overwrite, u.renameCheck, u.covCheck, u.cheatsCheck, moreInfo, u.startBtn),
@@ -201,6 +204,33 @@ func (u *UI) Root() fyne.CanvasObject {
 	center := container.NewHSplit(u.table, container.NewVScroll(previewContent))
 	center.SetOffset(0.70)
 	return container.NewBorder(top, bottom, nil, nil, center)
+}
+
+// banner builds the slim "discontinued" notice pinned to the top of the window.
+// This app is no longer maintained: everything it did — and more — now runs in
+// the browser-based sd2snes+ Web Manager, which the link on the right opens.
+func (u *UI) banner() fyne.CanvasObject {
+	mgr, _ := url.Parse(managerURL)
+
+	note := widget.NewRichTextFromMarkdown(
+		"⚠ **sd2snes Covers is discontinued.** Everything now runs in the " +
+			"**sd2snes+ Web Manager** — covers, game info, cheats, CRC32 matching, " +
+			"in-game previews, SD organizing & firmware updates, in your browser.")
+	note.Wrapping = fyne.TextWrapWord
+
+	open := widget.NewHyperlink("Open Web Manager  →", mgr)
+	open.TextStyle = fyne.TextStyle{Bold: true}
+
+	content := container.NewBorder(nil, nil, nil, open, note)
+
+	// Faint amber wash + outline so the strip reads as a warning on both the
+	// light and dark themes without hard-coding the surface color.
+	bg := canvas.NewRectangle(color.NRGBA{R: 0xF2, G: 0xA9, B: 0x3B, A: 0x24})
+	bg.StrokeColor = color.NRGBA{R: 0xF2, G: 0xA9, B: 0x3B, A: 0x80}
+	bg.StrokeWidth = 1
+	bg.CornerRadius = 6
+
+	return container.NewStack(bg, content)
 }
 
 // Start kicks off the initial DAT load and an async update check.

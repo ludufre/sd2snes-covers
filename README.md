@@ -12,6 +12,9 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 
 ---
 
+> [!WARNING]
+> **This desktop app is discontinued — `v1.4.2` is the final release.** Everything it did (and more) now runs in the browser-based **[sd2snes+ Web Manager](https://sd2snes.ludufre.com/manager)** — nothing to install. It downloads `.cov` covers, game info, and cheats automatically, identifies every game by CRC32, previews the in-game screen with sound, organizes the SD card, and updates the sd2snes+ firmware, all pulling from the community GameDB while your files never leave your computer.
+
 > **What is this for?** The [sd2snes+](https://github.com/ludufre/sd2snes) firmware fork can display a game's cover in the file browser. This tool prepares those covers (`<rom>.cov`, next to each ROM) so you just copy them to the SD card. Downloading the box art and matching by CRC32 are the means; **the `.cov` files are the goal.**
 
 > [!IMPORTANT]
@@ -40,13 +43,13 @@ Point it at a folder of Super Nintendo ROMs: it identifies each game by its CRC3
 ## 🚀 Usage
 
 1. **Select ROM folder** — pick the folder (subfolders are scanned too).
-2. Toggle the options you want: **Overwrite existing**, **Rename (No-Intro)**, **Generate .cov** (on by default), **Download cheats** (on by default — saves `<rom>.yml` into a `sd2snes/cheats/` folder at the root of the chosen folder).
+2. Toggle the options you want: **Overwrite existing**, **Rename (No-Intro)**, **Generate .cov** (on by default), **Download cheats** (on by default — saves `<rom>.yml` into a `sd2snes/cheats/` folder).
 3. **Start** — watch the progress bar and the per-ROM status in the table.
 4. (Optional) **Export CSV** with the results — it includes each game's **boxart URL** (handy for the ones reported as *Not found*) and opens with the right columns in Excel/LibreOffice. Click any table cell to copy its full text to the clipboard.
 
 The No-Intro DAT is downloaded once and cached; **Refresh DAT** forces a re-download. Downloaded box art is also cached between runs (so re-runs and duplicate ROMs don't re-download); **Settings → Clear cover cache** empties it. When **Generate .cov** is off, the cached PNG is copied next to the ROM instead. Use **Settings** to change the No-Intro DAT URL or the cover repository URL (saved across runs). A link to the [sd2snes+ firmware](https://github.com/ludufre/sd2snes) sits at the bottom of the window.
 
-Per-ROM status: **OK** · **Not found** (in the DAT, but no cover on the server) · **Skipped** (file already exists) · **No match** (CRC not in the DAT) · **Error** (network/IO). The **Cheats** column adds **Collision** (two different games would share one `cheats/<rom>.yml` — the first wins, the file is not overwritten). All columns are included in the exported CSV.
+Per-ROM status: **OK** · **Not found** (in the DAT, but no cover on the server) · **Skipped** (file already exists) · **No match** (CRC not in the DAT) · **Error** (network/IO). The **Cheats** column adds **Collision** (two different games would share one output filename — the first wins, the file is not overwritten). Cheats are fetched purely by CRC32, independent of the box-art DAT match. All columns are included in the exported CSV.
 
 ### Already have your own art? — Just convert to `.cov`
 

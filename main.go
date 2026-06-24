@@ -11,6 +11,7 @@ import (
 	"github.com/ludufre/sd2snes-covers/internal/ui"
 )
 
+//go:embed Icon.png
 var iconPNG []byte
 
 func main() {
@@ -20,7 +21,7 @@ func main() {
 
 	u := ui.New(w)
 	w.SetContent(u.Root())
-	w.Resize(fyne.NewSize(960, 640))
+	w.Resize(fyne.NewSize(1120, 640))
 
 	u.Start() // begin loading the DAT in the background
 	w.ShowAndRun()

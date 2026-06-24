@@ -5,8 +5,8 @@
 1 24 "packaging/windows/app.manifest" // 24 = RT_MANIFEST, id 1 = app manifest
 
 1 VERSIONINFO
-FILEVERSION 1,4,1,0
-PRODUCTVERSION 1,4,1,0
+FILEVERSION 1,4,2,0
+PRODUCTVERSION 1,4,2,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -19,12 +19,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "Luan Freitas"
       VALUE "FileDescription", "Generates .cov cover files for Super Nintendo ROMs (sd2snes)"
-      VALUE "FileVersion", "1.4.1.0"
+      VALUE "FileVersion", "1.4.2.0"
       VALUE "InternalName", "sd2snes-covers"
       VALUE "LegalCopyright", "(C) 2026 Luan Freitas"
       VALUE "OriginalFilename", "sd2snes-covers.exe"
       VALUE "ProductName", "sd2snes Covers"
-      VALUE "ProductVersion", "1.4.1.0"
+      VALUE "ProductVersion", "1.4.2.0"
     END
   END
   BLOCK "VarFileInfo"
